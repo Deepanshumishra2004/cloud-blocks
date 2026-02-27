@@ -1,0 +1,21 @@
+{
+  "name": "ws-server",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "scripts": {
+    "dev": "bun agent.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.995.0",
+    "@types/ws": "^8.18.1",
+    "redis": "^5.11.0",
+    "ws": "^8.19.0"
+  }
+}

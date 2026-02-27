@@ -1,0 +1,31 @@
+apiVerion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: main-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["*.xyz.com", "xyz.com"]
+      secretName: wildcard-tls
+  rules:
+    - host: "xyz.com"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: api-service, port: { number: 3000 } }
+    - host: "*.xyz.com"
+      http:
+        paths:
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service: { name: repl-router, port: { number: 8080 } }
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: repl-router, port: { number: 3000 } }

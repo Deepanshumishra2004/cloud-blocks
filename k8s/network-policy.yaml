@@ -1,0 +1,60 @@
+apiVerion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: repl-isolation
+  namespace: repls
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx  
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+    - ports:
+        - port: 443
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: data
+      ports:
+        - port: 6379
+---
+apiVerion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-to-data
+  namespace: data
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: repls
+      ports:
+        - port: 6379
+---
+apiVerion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: repl-no-lateral
+  namespace: repls
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx

@@ -1,0 +1,19 @@
+FROM oven/bun:1
+
+WORKDIR /app
+
+RUN apt-get update \
+  && apt-get install -y awscli \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /workspace
+
+COPY /ws-server/package.json ./ws-server/
+RUN cd ws-server && bun install
+
+COPY /ws-server ./ws-server
+COPY main.sh .
+
+RUN chmod +x main.sh
+
+CMD ["bash", "main.sh"]

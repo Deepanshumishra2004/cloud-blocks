@@ -1,0 +1,82 @@
+apiVerion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  namespace: app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api-server
+  template:
+    metadata:
+      labels:
+        app: api-server
+    spec:
+      containers:
+        - name: api
+          image: xyzdnalskndaslkndklasnkdnasksndl
+          ports:
+            - containerPort: 3000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key:  REDIS_URL
+            - name: STRIPE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: STRIPE_SECRET_KEY
+            - name: STRIPE_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: STRIPE_WEBHOOK_SECRET
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: JWT_SECRET
+            - name: S3_BUCKET
+              valueFrom:
+              secretKeyRef:
+                name: app-secrets
+                key: S3_BUCKET
+          resources:
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+          readinessProbe:
+            httpGet:
+              path:   /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path:   /health
+              port: 3000
+              initialDelaySeconds: 15
+              periodSeconds: 5
+---
+apiVerion: v1
+kind: service
+metadata:
+  name: api-service
+  namespace: app
+spec:
+  selector:
+    app: api-server
+  ports:
+    - port: 3000
+      targetPort: 3000

@@ -1,0 +1,175 @@
+@import "tailwindcss";
+/* @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap"); */
+@tailwind utilities;
+
+/* ============================================================
+   DESIGN TOKENS — CSS VARIABLES
+   Single source of truth for all theme values
+   ============================================================ */
+
+:root {
+  /* Shared */
+  --brand:          #facc15;
+  --brand-hover:    #eab308;
+  --brand-subtle:   rgba(250, 204, 21, 0.10);
+  --brand-border:   rgba(250, 204, 21, 0.30);
+
+  --success:        #22c55e;
+  --success-subtle: rgba(34, 197, 94, 0.10);
+  --success-border: rgba(34, 197, 94, 0.20);
+  --warning:        #f59e0b;
+  --warning-subtle: rgba(245, 158, 11, 0.10);
+  --warning-border: rgba(245, 158, 11, 0.20);
+  --danger:         #ef4444;
+  --danger-subtle:  rgba(239, 68, 68, 0.10);
+  --danger-border:  rgba(239, 68, 68, 0.20);
+  --info:           #3b82f6;
+  --info-subtle:    rgba(59, 130, 246, 0.10);
+  --info-border:    rgba(59, 130, 246, 0.20);
+
+  --sidebar-width: 228px;
+  --topbar-height: 52px;
+}
+
+/* ── DARK THEME (default) ─────────────────────────────── */
+:root,
+.dark {
+  --cb-bg-page:     #111111;
+  --cb-bg-surface:  #1a1a1a;
+  --cb-bg-elevated: #222222;
+  --cb-bg-hover:    #252525;
+  --cb-bg-active:   rgba(250, 204, 21, 0.06);
+
+  --cb-border:       #2a2a2a;
+  --cb-border-strong:#3a3a3a;
+
+  --cb-text-primary:  #f5f5f5;
+  --cb-text-secondary:#a3a3a3;
+  --cb-text-muted:    #666666;
+  --cb-text-disabled: #404040;
+
+  --cb-input-bg:     #1a1a1a;
+  --cb-input-border: #2a2a2a;
+
+  --cb-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.20);
+  --cb-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.30);
+  --cb-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.40);
+}
+
+/* ── LIGHT THEME ──────────────────────────────────────── */
+.light {
+  --cb-bg-page:     #f5f5f5;
+  --cb-bg-surface:  #ffffff;
+  --cb-bg-elevated: #f9fafb;
+  --cb-bg-hover:    #f3f4f6;
+  --cb-bg-active:   rgba(250, 204, 21, 0.06);
+
+  --cb-border:        #e5e5e5;
+  --cb-border-strong: #d4d4d4;
+
+  --cb-text-primary:  #111111;
+  --cb-text-secondary:#525252;
+  --cb-text-muted:    #9ca3af;
+  --cb-text-disabled: #d1d5db;
+
+  --cb-input-bg:     #ffffff;
+  --cb-input-border: #e5e5e5;
+
+  --cb-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --cb-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --cb-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+/* ============================================================
+   BASE STYLES
+   ============================================================ */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: var(--cb-bg-page);
+  color: var(--cb-text-primary);
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+/* ============================================================
+   SCROLLBAR
+   ============================================================ */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--cb-bg-page); }
+::-webkit-scrollbar-thumb {
+  background: var(--cb-border-strong);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--cb-text-disabled); }
+
+/* ============================================================
+   UTILITIES — extend Tailwind with semantic tokens
+   ============================================================ */
+@layer utilities {
+  /* Backgrounds */
+  .bg-cb-page     { background-color: var(--cb-bg-page); }
+  .bg-cb-surface  { background-color: var(--cb-bg-surface); }
+  .bg-cb-elevated { background-color: var(--cb-bg-elevated); }
+  .bg-cb-hover    { background-color: var(--cb-bg-hover); }
+  .bg-cb-active   { background-color: var(--cb-bg-active); }
+
+  /* Borders */
+  .border-cb         { border-color: var(--cb-border); }
+  .border-cb-strong  { border-color: var(--cb-border-strong); }
+  .border-brand      { border-color: var(--brand); }
+
+  /* Text */
+  .text-cb-primary   { color: var(--cb-text-primary); }
+  .text-cb-secondary { color: var(--cb-text-secondary); }
+  .text-cb-muted     { color: var(--cb-text-muted); }
+  .text-cb-disabled  { color: var(--cb-text-disabled); }
+
+  /* Brand focus ring */
+  .focus-brand:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+  }
+
+  /* Shadows */
+  .shadow-cb-sm { box-shadow: var(--cb-shadow-sm); }
+  .shadow-cb-md { box-shadow: var(--cb-shadow-md); }
+  .shadow-cb-lg { box-shadow: var(--cb-shadow-lg); }
+
+  /* Font */
+  .font-sans { font-family: "IBM Plex Sans", system-ui, sans-serif; }
+  .font-mono { font-family: "IBM Plex Mono", monospace; }
+}
+
+/* ============================================================
+   COMPONENT BASE — @layer components
+   ============================================================ */
+@layer components {
+  /* Sidebar nav item active left border */
+  .nav-item-active-bar {
+    position: relative;
+  }
+  .nav-item-active-bar::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 4px;
+    bottom: 4px;
+    width: 2px;
+    background: var(--brand);
+    border-radius: 0 2px 2px 0;
+  }
+
+  /* Code block scrollbar */
+  .code-scroll::-webkit-scrollbar { height: 4px; }
+  .code-scroll::-webkit-scrollbar-track { background: transparent; }
+  .code-scroll::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+}

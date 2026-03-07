@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { PAYMENT, PLAN, REPL, SUBSCRIPTION, USER } from "../config";
+import { PAYMENT, PLAN, REPL, SUBSCRIPTION, USER } from "../config/config";
 import userRoutes from "./user.route";
 import replRoutes from "./repl.route";
 import planRoutes from "./plan.route";

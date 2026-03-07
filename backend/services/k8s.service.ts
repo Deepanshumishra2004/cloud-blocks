@@ -13,7 +13,7 @@ export const createReplPod = async (replId: string) => {
             nodeSelector: { pool: "repl_workers" },
             containers: [{
                 name: "runner",
-                image: "",
+                image: "deepanshumishra2004/execution_layer:latest",
                 env: [
                     { name : "REPL_ID", value : replId },
                     { name : "S3_BUCKET", value : process.env.S3_BUCKET },

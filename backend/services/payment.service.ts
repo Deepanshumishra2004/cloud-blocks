@@ -14,6 +14,11 @@ export const createCheckoutSession = async (
     });
   
     if (!plan) throw new Error("Plan not found");
+
+    const clientUrl = process.env.CLIENT_URL;
+    if (!clientUrl) {
+      throw new Error("CLIENT_URL is not configured");
+    }
   
     return stripe.checkout.sessions.create({
       mode: "subscription",
@@ -23,8 +28,8 @@ export const createCheckoutSession = async (
           quantity: 1,
         },
       ],
-      success_url: `${process.env.CLIENT_URL}/success`,
-      cancel_url: `${process.env.CLIENT_URL}/cancel`,
+      success_url: `${clientUrl}/success`,
+      cancel_url: `${clientUrl}/cancel`,
       metadata: {
         userId,
         planId,

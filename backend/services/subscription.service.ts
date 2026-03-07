@@ -27,6 +27,7 @@ export const createSubscriptionAfterPayment = async (
     data: {
       userId,
       planId,
+      stripeSubscriptionId,
       status: SubscriptionStatus.ACTIVE,
       currentPeriodStart: new Date(),
       currentPeriodEnd: new Date(

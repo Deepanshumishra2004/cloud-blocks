@@ -1,40 +1,34 @@
+// src/middleware/auth.middleware.ts
 import type { Request, Response, NextFunction } from "express";
-import jwt from "jsonwebtoken";
-import type { JwtPayload } from "jsonwebtoken";
+import { verifyToken } from "../lib/token";
 
-interface ExtendedPayload extends JwtPayload {
-  userId: string;
-}
-
-export interface AuthRequest extends Request {
-  userId?: string;
-}
-
-export const authMiddleware = (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-) => {
+/**
+ * Reads JWT from:
+ *  1. HttpOnly cookie  cb_token    (preferred — browser flow)
+ *  2. Authorization: Bearer <token> header (API / mobile clients)
+ */
+export const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
   try {
-    const authHeader = req.headers.authorization;
+    // 1. Cookie
+    let token: string | undefined = req.cookies?.cb_token;
 
-    if (!authHeader?.startsWith("Bearer ")) {
-      return res.status(401).json({ message: "Unauthorized" });
+    // 2. Bearer header
+    if (!token) {
+      const auth = req.headers.authorization;
+      if (auth?.startsWith("Bearer ")) {
+        token = auth.slice(7);
+      }
     }
 
-    const token = authHeader.split(" ")[1];
-    const JWT_SECRET = process.env.JWT_SECRET;
-
-    if (!JWT_SECRET) {
-      throw new Error("JWT_SECRET not defined");
+    if (!token) {
+      return res.status(401).json({ message: "Authentication required" });
     }
 
-    const decoded = jwt.verify(token!, JWT_SECRET!) as ExtendedPayload;
-
-    req.userId = decoded.userId;
+    const payload = verifyToken(token);
+    (req as any).userId = payload.userId;
 
     next();
   } catch {
-    return res.status(401).json({ message: "Invalid token" });
+    return res.status(401).json({ message: "Invalid or expired token" });
   }
 };

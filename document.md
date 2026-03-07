@@ -627,3 +627,10 @@ Response: 200 { received: true }
 ---
 
 *Generated from codebase analysis. Last updated: 2025.*
+
+---
+
+## Document Update
+
+- Updated on: 2026-03-05
+- Change: Added this update marker to confirm the latest revision of `document.md`.

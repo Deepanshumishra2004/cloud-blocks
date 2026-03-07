@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { DELETE_SUBSCRIPTION, USER_SUBSCRIPTION } from "../config";
+import { DELETE_SUBSCRIPTION, USER_SUBSCRIPTION } from "../config/config";
 import { getUserSubscription, cancelSubscription } from "../controller/subcription.controller";
 
 const subscriptionRoutes = Router();

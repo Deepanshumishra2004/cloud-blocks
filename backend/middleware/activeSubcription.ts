@@ -1,7 +1,10 @@
-import type { NextFunction, Response } from "express";
-import type { AuthRequest } from "./authMiddleware";
+import type { NextFunction, Request, Response } from "express";
 import { redis } from "../lib/redis";
 import { prisma } from "../lib/prisma";
+
+export interface AuthRequest extends Request {
+  userId?: string
+}
 
 export const requireActiveSubscription =async(req: AuthRequest, res: Response, next : NextFunction)=>{
 

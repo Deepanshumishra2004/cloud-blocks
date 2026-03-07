@@ -38,17 +38,35 @@ enum ReplStatusType {
   STOPPED
 }
 
-model User {
-  id            String   @id @default(uuid())
-  email         String   @unique
-  username      String   @unique
-  password      String
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+enum Provider {
+  EMAIL
+  GOOGLE
+  GITHUB
+}
 
-  repls         Repl[]
-  subscription  Subscription?
-  payments      Payment[]
+enum PlanName {
+  FREE
+  PRO
+  TEAMS
+}
+
+model User {
+  id         String   @id @default(uuid())
+  email      String   @unique
+  username   String   @unique
+  password   String?           // null for OAuth-only accounts
+  provider   Provider @default(EMAIL)
+  providerId String?           // Google "sub" or GitHub numeric id
+  avatar     String?           // profile picture URL from OAuth
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  repls        Repl[]
+  subscription Subscription?
+  payments     Payment[]
+
+  @@index([provider, providerId])
+  @@map("users")
 }
 
 model Repl {
@@ -65,7 +83,7 @@ model Repl {
 
 model Plan {
   id            String   @id @default(uuid())
-  name          String   @unique
+  name          PlanName
   price         Int
   stripePriceId String   @unique
   billingCycle  BillingCycle
@@ -74,6 +92,8 @@ model Plan {
   createdAt     DateTime @default(now())
 
   subscriptions Subscription[]
+
+    @@unique([name, billingCycle])
 }
 
 model Subscription {

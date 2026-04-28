@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma";
 import { z }      from "zod";
 import { deleteReplPod, getReplRuntimeUrls, provisionReplRuntime } from "../services/k8s.service";
 import { seedReplFromTemplate } from "../services/repl-storage.service";
+import { logger } from "../lib/logger";
 
 /* ─────────────────────────────────────────────────────────────
    VALIDATION
@@ -72,7 +73,7 @@ export const getAllRepls = async (req: Request, res: Response) => {
 
     return res.json({ repls: withLastActive });
   } catch (err) {
-    console.error("[getAllRepls]", err);
+    logger.error("[getAllRepls]", err);
     return res.status(500).json({ message: "Failed to fetch repls" });
   }
 };
@@ -93,7 +94,7 @@ export const getReplById = async (req: Request, res: Response) => {
           : repl,
     });
   } catch (err) {
-    console.error("[getReplById]", err);
+    logger.error("[getReplById]", err);
     return res.status(500).json({ message: "Failed to fetch repl" });
   }
 };
@@ -141,12 +142,12 @@ export const createRepl = async (req: Request, res: Response) => {
     });
 
     await seedReplFromTemplate(repl.id, repl.type).catch((error) => {
-      console.error("[createRepl:seedTemplate]", error);
+      logger.error("[createRepl:seedTemplate]", error);
     });
 
     return res.status(201).json({ repl });
   } catch (err) {
-    console.error("[createRepl]", err);
+    logger.error("[createRepl]", err);
     return res.status(500).json({ message: "Failed to create repl" });
   }
 };
@@ -176,7 +177,7 @@ export const updateRepl = async (req: Request, res: Response) => {
 
     return res.json({ repl });
   } catch (err) {
-    console.error("[updateRepl]", err);
+    logger.error("[updateRepl]", err);
     return res.status(500).json({ message: "Failed to rename repl" });
   }
 };
@@ -190,10 +191,16 @@ export const deleteRepl = async (req: Request, res: Response) => {
     const existing = await ownedRepl((req as any).params.replId, (req as any).userId);
     if (!existing) return res.status(404).json({ message: "Repl not found" });
 
+    if (existing.status === "RUNNING") {
+      await deleteReplPod(existing.id).catch((err) =>
+        logger.error({ err, replId: existing.id }, "deleteRepl: failed to remove K8s resources")
+      );
+    }
+
     await prisma.repl.delete({ where: { id: (req as any).params.replId } });
     return res.status(200).json({ message: "Repl deleted" });
   } catch (err) {
-    console.error("[deleteRepl]", err);
+    logger.error("[deleteRepl]", err);
     return res.status(500).json({ message: "Failed to delete repl" });
   }
 };
@@ -217,7 +224,7 @@ export const startRepl = async (req: Request, res: Response) => {
     try {
       runtime = await provisionReplRuntime(existing.id, existing.type);
     } catch (provisionErr) {
-      console.error("[startRepl:provision]", provisionErr);
+      logger.error("[startRepl:provision]", provisionErr);
 
       const e = provisionErr as {
         statusCode?: number;
@@ -247,7 +254,7 @@ export const startRepl = async (req: Request, res: Response) => {
       host: runtime.host,
     });
   } catch (err) {
-    console.error("[startRepl]", err);
+    logger.error("[startRepl]", err);
     return res.status(500).json({ message: "Failed to start repl" });
   }
 };
@@ -275,7 +282,7 @@ export const stopRepl = async (req: Request, res: Response) => {
 
     return res.json({ repl });
   } catch (err) {
-    console.error("[stopRepl]", err);
+    logger.error("[stopRepl]", err);
     return res.status(500).json({ message: "Failed to stop repl" });
   }
 };

@@ -1,6 +1,7 @@
 // src/controllers/plan.controller.ts
 import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
+import { logger } from "../lib/logger";
 
 /* ─────────────────────────────────────────────────────────────
    GET ALL PLANS  GET /api/v1/plan/all
@@ -14,7 +15,7 @@ export const getAllPlans = async (_req: Request, res: Response) => {
     });
     return res.json({ plans });
   } catch (err) {
-    console.error("[getAllPlans]", err);
+    logger.error("[getAllPlans]", err);
     return res.status(500).json({ message: "Failed to fetch plans" });
   }
 };
@@ -31,7 +32,7 @@ export const getSinglePlan = async (req: Request, res: Response) => {
     if (!plan) return res.status(404).json({ message: "Plan not found" });
     return res.json({ plan });
   } catch (err) {
-    console.error("[getSinglePlan]", err);
+    logger.error("[getSinglePlan]", err);
     return res.status(500).json({ message: "Failed to fetch plan" });
   }
 };
@@ -44,8 +45,6 @@ export const getSinglePlan = async (req: Request, res: Response) => {
 export const createPlan = async (req: Request, res: Response) => {
   try {
     const { name, price, stripePriceId, billingCycle, maxRepls, maxStorageMB } = req.body;
-
-    console.log(req.body);
 
     if (!name || price == null || !stripePriceId || !billingCycle || maxRepls == null || maxStorageMB == null) {
       return res.status(400).json({ message: "All plan fields are required" });
@@ -60,7 +59,7 @@ export const createPlan = async (req: Request, res: Response) => {
     if (err.code === "P2002") {
       return res.status(409).json({ message: "A plan with that name or Stripe price ID already exists" });
     }
-    console.error("[createPlan]", err);
+    logger.error("[createPlan]", err);
     return res.status(500).json({ message: "Failed to create plan" });
   }
 };
@@ -83,7 +82,7 @@ export const deletePlan = async (req: Request, res: Response) => {
     if (err.code === "P2003") {
       return res.status(409).json({ message: "Cannot delete plan with active subscriptions" });
     }
-    console.error("[deletePlan]", err);
+    logger.error("[deletePlan]", err);
     return res.status(500).json({ message: "Failed to delete plan" });
   }
 };
@@ -132,7 +131,7 @@ export const getUserSubscription = async (req: Request, res: Response) => {
 
     return res.json({ subscription: sub });
   } catch (err) {
-    console.error("[getUserSubscription]", err);
+    logger.error("[getUserSubscription]", err);
     return res.status(500).json({ message: "Failed to fetch subscription" });
   }
 };
@@ -171,7 +170,7 @@ export const getUserUsage = async (req: Request, res: Response) => {
       },
     });
   } catch (err) {
-    console.error("[getUserUsage]", err);
+    logger.error("[getUserUsage]", err);
     return res.status(500).json({ message: "Failed to fetch usage" });
   }
 };

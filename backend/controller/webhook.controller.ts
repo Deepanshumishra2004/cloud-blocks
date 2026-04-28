@@ -2,6 +2,8 @@ import type { Request, Response } from "express";
 import Stripe from "stripe";
 import { prisma } from "../lib/prisma";
 import { stripe } from "../lib/stripe";
+import { logger } from "../lib/logger";
+import { env } from "../config/env";
 import type { SubscriptionStatus } from "../generated/prisma/enums";
 
 // ── moved outside handler so it's not recreated on every request ──
@@ -39,17 +41,23 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
     event = stripe.webhooks.constructEvent(
       req.body,
       sig,
-      process.env.STRIPE_WEBHOOK_SECRET!
+      env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    console.error("[webhook] signature verification failed", err);
+    logger.error("[webhook] signature verification failed", err);
     return res.status(400).send("Webhook Error");
   }
 
-  console.log(`[webhook] received eventId=${event.id} type=${event.type}`);
+  logger.info(`[webhook] received eventId=${event.id} type=${event.type}`);
 
   // ── 2. handle events ─────────────────────────────────────────────
   try {
+    const seen = await prisma.stripeEvent.findUnique({ where: { id: event.id } });
+    if (seen) {
+      logger.info(`[webhook] duplicate event ${event.id}, skipping`);
+      return res.json({ received: true });
+    }
+
     switch (event.type) {
 
       // ── SUBSCRIPTION CREATED ──────────────────────────────────────
@@ -59,14 +67,14 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
         // validate metadata before touching the DB
         const { userId, planId } = subscription.metadata;
         if (!userId || !planId) {
-          console.error(`[webhook] missing metadata on subscription ${subscription.id}`);
+          logger.error(`[webhook] missing metadata on subscription ${subscription.id}`);
           break;
         }
 
         // validate plan exists to avoid FK violation
         const plan = await prisma.plan.findUnique({ where: { id: planId } });
         if (!plan) {
-          console.error(`[webhook] plan not found: ${planId}`);
+          logger.error(`[webhook] plan not found: ${planId}`);
           break;
         }
 
@@ -75,7 +83,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
           where: { stripeSubscriptionId: subscription.id },
         });
         if (existing) {
-          console.log(`[webhook] subscription already exists, skipping ${subscription.id}`);
+          logger.info(`[webhook] subscription already exists, skipping ${subscription.id}`);
           break;
         }
 
@@ -89,7 +97,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
           },
         });
 
-        console.log(`[webhook] subscription created for userId=${userId}`);
+        logger.info(`[webhook] subscription created for userId=${userId}`);
         break;
       }
 
@@ -113,7 +121,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
           },
         });
 
-        console.log(`[webhook] subscription updated ${subscription.id}`);
+        logger.info(`[webhook] subscription updated ${subscription.id}`);
         break;
       }
 
@@ -130,10 +138,10 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
         });
 
         if (updated.count === 0) {
-          console.warn(`[webhook] subscription not found for deletion ${subscription.id}`);
+          logger.warn(`[webhook] subscription not found for deletion ${subscription.id}`);
         }
 
-        console.log(`[webhook] subscription canceled ${subscription.id}`);
+        logger.info(`[webhook] subscription canceled ${subscription.id}`);
         break;
       }
 
@@ -152,7 +160,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
           where: { stripeSubscriptionId },
         });
         if (!sub) {
-          console.warn(`[webhook] no subscription found for invoice ${invoice.id}`);
+          logger.warn(`[webhook] no subscription found for invoice ${invoice.id}`);
           break;
         }
 
@@ -161,7 +169,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
           where: { providerId: invoice.id },
         });
         if (existingPayment) {
-          console.log(`[webhook] payment already recorded for invoice ${invoice.id}`);
+          logger.info(`[webhook] payment already recorded for invoice ${invoice.id}`);
           break;
         }
 
@@ -177,7 +185,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
           },
         });
 
-        console.log(`[webhook] payment recorded for invoiceId=${invoice.id}`);
+        logger.info(`[webhook] payment recorded for invoiceId=${invoice.id}`);
         break;
       }
 
@@ -198,21 +206,22 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
         });
 
         if (updated.count === 0) {
-          console.warn(`[webhook] no subscription found for failed invoice ${invoice.id}`);
+          logger.warn(`[webhook] no subscription found for failed invoice ${invoice.id}`);
         }
 
-        console.log(`[webhook] subscription marked PAST_DUE for invoiceId=${invoice.id}`);
+        logger.info(`[webhook] subscription marked PAST_DUE for invoiceId=${invoice.id}`);
         break;
       }
 
       default:
-        console.log(`[webhook] unhandled event type: ${event.type}`);
+        logger.info(`[webhook] unhandled event type: ${event.type}`);
     }
 
+    await prisma.stripeEvent.create({ data: { id: event.id, type: event.type } });
     return res.json({ received: true });
 
   } catch (err) {
-    console.error(`[webhook] handler error eventId=${event.id}`, err);
+    logger.error(`[webhook] handler error eventId=${event.id}`, err);
     return res.status(500).send("Server error");
   }
 };

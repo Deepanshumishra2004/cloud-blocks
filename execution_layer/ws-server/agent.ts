@@ -1,6 +1,7 @@
 import axios from "axios";
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import fs from "fs";
+import jwt from "jsonwebtoken";
 import path from "path";
 import { createClient } from "redis";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -42,6 +43,9 @@ type ClientMessage =
   | { type: "terminal:clear" }
   | { type: "file:list" }
   | { type: "file:read"; path: string }
+  | { type: "file:create"; path: string; content?: string }
+  | { type: "file:delete"; path: string }
+  | { type: "file:rename"; oldPath: string; newPath: string }
   | {
       type: "file:patch";
       path: string;
@@ -56,6 +60,7 @@ type ServerMessage =
   | { type: "file:list"; tree: FileNode[] }
   | { type: "file:content"; path: string; content: string; version: number }
   | { type: "file:patched"; path: string; version: number }
+  | { type: "file:renamed"; oldPath: string; newPath: string }
   | { type: "error"; message: string };
 
 const ACTIVE_TTL_SECONDS = 300;
@@ -332,7 +337,7 @@ const readSnapshotManifest = async (prefix: string) => {
         Key: manifestKey,
       }),
     );
-    const raw = await res.Body!.transformToString();
+    const raw = await res.Body?.transformToString() ?? "";
     const parsed = JSON.parse(raw) as { files?: string[] };
     return Array.isArray(parsed.files) ? parsed.files : null;
   } catch {
@@ -352,7 +357,8 @@ const restoreFilesFromPrefix = async (prefix: string, files: string[]) => {
     const fullPath = workspacePath(relativePath);
     ensureParentDir(fullPath);
 
-    const content = await res.Body!.transformToString();
+    if (!res.Body) continue;
+    const content = await res.Body.transformToString();
     fs.writeFileSync(fullPath, content, "utf-8");
     await redis.set(getRedisFileKey(relativePath), content);
     fileVersions.set(relativePath, 0);
@@ -415,7 +421,12 @@ const syncWorkspaceSnapshot = async () => {
   expectedKeys.add(getSnapshotObjectKey(SNAPSHOT_MANIFEST_KEY));
 
   for (const relativePath of workspaceFiles) {
-    const content = fs.readFileSync(workspacePath(relativePath), "utf-8");
+    let content: string;
+    try {
+      content = fs.readFileSync(workspacePath(relativePath), "utf-8");
+    } catch {
+      continue;
+    }
     await uploadToS3(relativePath, content);
     dirtyFiles.delete(relativePath);
     await redis.del(getRedisWalKey(relativePath));
@@ -687,7 +698,20 @@ const flushPreviewLogs = () => {
   });
 };
 
-const verifyUser = (_token: string) => true;
+const JWT_SECRET = process.env.JWT_SECRET;
+
+const verifyUser = (token: string): boolean => {
+  if (!JWT_SECRET) {
+    console.error("[ws] JWT_SECRET not set — rejecting all connections");
+    return false;
+  }
+  try {
+    jwt.verify(token, JWT_SECRET);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 await redis.connect();
 ensurePreviewLogState();
@@ -738,17 +762,37 @@ setInterval(() => {
   }
 }, 1000);
 
-const wss = new WebSocketServer({ port: WS_PORT });
+const wss = new WebSocketServer({ port: WS_PORT, maxPayload: 1024 * 1024 }); // 1 MB cap
+
+// Heartbeat: terminate silently dead connections every 30s
+const heartbeatInterval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if ((ws as any).isAlive === false) {
+      ws.terminate();
+      return;
+    }
+    (ws as any).isAlive = false;
+    ws.ping();
+  });
+}, 30_000);
+
+wss.on("close", () => clearInterval(heartbeatInterval));
 
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url!, "ws://localhost");
   const token = url.searchParams.get("token");
+  const clientIp = req.socket.remoteAddress ?? "unknown";
 
   if (!token || !verifyUser(token)) {
+    console.warn(`[ws] rejected unauthenticated connection from ${clientIp}`);
     ws.close(4001, "Unauthorized");
     return;
   }
 
+  (ws as any).isAlive = true;
+  ws.on("pong", () => { (ws as any).isAlive = true; });
+
+  console.log(`[ws] client connected replId=${REPL_ID} ip=${clientIp}`);
   clients.add(ws);
   const terminalSession: TerminalSession = {
     cwd: WORKSPACE,
@@ -821,6 +865,32 @@ wss.on("connection", (ws, req) => {
           });
           break;
         }
+          case "file:create": {
+          const relativePath = normalizeRelativePath(msg.path);
+          const fullPath = path.join(WORKSPACE, relativePath);
+          const dir = path.dirname(fullPath);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          if (!fs.existsSync(fullPath)) fs.writeFileSync(fullPath, msg.content ?? "", "utf-8");
+          broadcastJson({ type: "file:list", tree: buildFileTree(WORKSPACE) });
+          break;
+        }
+        case "file:delete": {
+          const relativePath = normalizeRelativePath(msg.path);
+          const fullPath = path.join(WORKSPACE, relativePath);
+          if (fs.existsSync(fullPath)) fs.rmSync(fullPath, { recursive: true, force: true });
+          broadcastJson({ type: "file:list", tree: buildFileTree(WORKSPACE) });
+          break;
+        }
+        case "file:rename": {
+          const oldRelative = normalizeRelativePath(msg.oldPath);
+          const newRelative = normalizeRelativePath(msg.newPath);
+          const oldFull = path.join(WORKSPACE, oldRelative);
+          const newFull = path.join(WORKSPACE, newRelative);
+          if (fs.existsSync(oldFull)) fs.renameSync(oldFull, newFull);
+          broadcastJson({ type: "file:renamed", oldPath: oldRelative, newPath: newRelative });
+          broadcastJson({ type: "file:list", tree: buildFileTree(WORKSPACE) });
+          break;
+        }
         default:
           sendJson(ws, {
             type: "error",
@@ -837,6 +907,7 @@ wss.on("connection", (ws, req) => {
   });
 
   ws.on("close", () => {
+    console.log(`[ws] client disconnected replId=${REPL_ID} ip=${clientIp}`);
     clients.delete(ws);
     terminalSession.process?.kill("SIGTERM");
     terminalSession.process = null;

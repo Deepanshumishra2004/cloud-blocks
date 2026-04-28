@@ -172,3 +172,11 @@ model Payment {
   user           User          @relation(fields: [userId], references: [id])
   subscription   Subscription  @relation(fields: [subscriptionId], references: [id])
 }
+
+model StripeEvent {
+  id          String   @id          // Stripe's evt_xxx — globally unique
+  type        String
+  processedAt DateTime @default(now())
+
+  @@map("stripe_events")
+}

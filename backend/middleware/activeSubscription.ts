@@ -9,6 +9,7 @@ export interface AuthRequest extends Request {
 export const requireActiveSubscription =async(req: AuthRequest, res: Response, next : NextFunction)=>{
 
   const userId = req.userId;
+  if (!userId) return res.status(401).json({ message: "Unauthorized" });
   const cacheKey = `sub:${userId}`;
 
   const cached = await redis.get(cacheKey);

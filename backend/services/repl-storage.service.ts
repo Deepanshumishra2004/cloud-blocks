@@ -3,9 +3,11 @@ import {
   ListObjectsV2Command,
   S3Client,
 } from "@aws-sdk/client-s3";
+import { env } from "../config/env";
+import { logger } from "../lib/logger";
 
-const S3_BUCKET = process.env.S3_BUCKET;
-const AWS_REGION = process.env.AWS_REGION || "ap-south-1";
+const S3_BUCKET = env.S3_BUCKET;
+const AWS_REGION = env.AWS_REGION;
 
 const s3 = S3_BUCKET ? new S3Client({ region: AWS_REGION }) : null;
 
@@ -22,7 +24,7 @@ export const getTemplateNameForReplType = (replType: string) =>
 
 export const seedReplFromTemplate = async (replId: string, replType: string) => {
   if (!s3 || !S3_BUCKET) {
-    console.warn("[seedReplFromTemplate] S3_BUCKET is not configured, skipping seed");
+    logger.warn("[seedReplFromTemplate] S3_BUCKET is not configured, skipping seed");
     return;
   }
 
@@ -42,7 +44,7 @@ export const seedReplFromTemplate = async (replId: string, replType: string) => 
   );
 
   if (objects.length === 0) {
-    console.warn(
+    logger.warn(
       `[seedReplFromTemplate] No template files found at s3://${S3_BUCKET}/${sourcePrefix}`,
     );
     return;

@@ -1,4 +1,6 @@
 import * as k8s from "@kubernetes/client-node";
+import { env } from "../config/env";
+import { logger } from "../lib/logger";
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
@@ -13,15 +15,15 @@ if (process.env.KUBERNETES_SERVICE_HOST && process.env.KUBERNETES_SERVICE_PORT) 
 const coreApi = kc.makeApiClient(k8s.CoreV1Api);
 const networkingApi = kc.makeApiClient(k8s.NetworkingV1Api);
 
-const NAMESPACE = process.env.REPL_NAMESPACE || "repls";
-const REPL_IMAGE = process.env.REPL_IMAGE || "deepanshumishra2004/execution_layer:latest";
-const BASE_DOMAIN = process.env.REPL_BASE_DOMAIN || "127.0.0.1.nip.io";
-const REPL_RUNTIME_SECRET = process.env.REPL_RUNTIME_SECRET || "repl-runtime-secrets";
-const inferPublicProtocol = () => {
-  if (process.env.REPL_PUBLIC_PROTOCOL) return process.env.REPL_PUBLIC_PROTOCOL;
+const NAMESPACE = env.REPL_NAMESPACE;
+const REPL_IMAGE = env.REPL_IMAGE;
+const BASE_DOMAIN = env.REPL_BASE_DOMAIN;
+const REPL_RUNTIME_SECRET = env.REPL_RUNTIME_SECRET;
 
+const inferPublicProtocol = (): string => {
+  if (env.REPL_PUBLIC_PROTOCOL) return env.REPL_PUBLIC_PROTOCOL;
   try {
-    return new URL(process.env.APP_URL || "http://localhost").protocol.replace(":", "");
+    return new URL(env.APP_URL).protocol.replace(":", "");
   } catch {
     return "http";
   }
@@ -29,7 +31,7 @@ const inferPublicProtocol = () => {
 
 const REPL_PUBLIC_PROTOCOL = inferPublicProtocol();
 const REPL_PUBLIC_WS_PROTOCOL =
-  process.env.REPL_PUBLIC_WS_PROTOCOL ||
+  env.REPL_PUBLIC_WS_PROTOCOL ??
   (REPL_PUBLIC_PROTOCOL === "https" ? "wss" : "ws");
 
 const isAlreadyExistsError = (error: unknown): boolean => {
@@ -85,11 +87,12 @@ export const provisionReplRuntime = async (replId: string, type: string) => {
           image: REPL_IMAGE,
           imagePullPolicy: "Always",
           env: [
-            { name: "REPL_ID", value: cleanReplId },
-            { name: "REPL_TYPE", value: normalizedType },
-            { name: "S3_BUCKET", value: process.env.S3_BUCKET || "" },
-            { name: "REDIS_URL", value: process.env.REDIS_URL || "" },
-            { name: "AWS_REGION", value: process.env.AWS_REGION || "ap-south-1" },
+            { name: "REPL_ID",     value: cleanReplId },
+            { name: "REPL_TYPE",   value: normalizedType },
+            { name: "S3_BUCKET",   value: env.S3_BUCKET ?? "" },
+            { name: "REDIS_URL",   value: env.REDIS_URL },
+            { name: "AWS_REGION",  value: env.AWS_REGION },
+            { name: "JWT_SECRET",  value: env.JWT_SECRET },
           ],
           envFrom: [{ secretRef: { name: REPL_RUNTIME_SECRET } }],
           ports: [
@@ -204,7 +207,7 @@ export const provisionReplRuntime = async (replId: string, type: string) => {
     });
   } catch (e) {
     if (!isAlreadyExistsError(e)) throw e;
-    console.log(`[k8s] pod already exists for repl ${cleanReplId}`);
+    logger.info(`[k8s] pod already exists for repl ${cleanReplId}`);
   }
 
   try {
@@ -214,7 +217,7 @@ export const provisionReplRuntime = async (replId: string, type: string) => {
     });
   } catch (e) {
     if (!isAlreadyExistsError(e)) throw e;
-    console.log(`[k8s] service already exists for repl ${cleanReplId}`);
+    logger.info(`[k8s] service already exists for repl ${cleanReplId}`);
   }
 
   try {
@@ -224,7 +227,7 @@ export const provisionReplRuntime = async (replId: string, type: string) => {
     });
   } catch (e) {
     if (!isAlreadyExistsError(e)) throw e;
-    console.log(`[k8s] ingress already exists for repl ${cleanReplId}`);
+    logger.info(`[k8s] ingress already exists for repl ${cleanReplId}`);
   }
 
   return {

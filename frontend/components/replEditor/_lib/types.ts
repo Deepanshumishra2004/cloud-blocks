@@ -15,6 +15,7 @@ export type WsMsg =
   | { type: "file:list"; tree: FileNode[] }
   | { type: "file:content"; path: string; content: string; version: number }
   | { type: "file:patched"; path: string; version: number }
+  | { type: "file:renamed"; oldPath: string; newPath: string }
   | { type: "status"; status: ReplStatus }
   | { type: "preview:url"; url: string }
   | { type: "error"; message: string };

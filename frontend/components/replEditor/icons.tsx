@@ -57,3 +57,27 @@ export function FileIcon({ ext }: { ext: string }) {
     </svg>
   );
 }
+
+export function PlusIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M8 3v10M3 8h10" />
+    </svg>
+  );
+}
+
+export function TrashIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
+      <path d="M3 4h10M6 4V2h4v2M5 4l1 9h4l1-9" />
+    </svg>
+  );
+}
+
+export function RefreshIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M13.5 8a5.5 5.5 0 11-1.4-3.6M13.5 2v3.5H10" />
+    </svg>
+  );
+}

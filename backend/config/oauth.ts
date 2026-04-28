@@ -12,11 +12,12 @@
  *   4. Frontend stores JWT in cookie / localStorage
  */
 import "dotenv/config";
+import { env } from "./env";
 
 export const GOOGLE = {
-    clientId:     process.env.GOOGLE_CLIENT_ID!,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
-    redirectUri:  `${process.env.APP_URL}/api/v1/user/google/callback`,
+    clientId:     env.GOOGLE_CLIENT_ID ?? "",
+    clientSecret: env.GOOGLE_CLIENT_SECRET ?? "",
+    redirectUri:  `${env.APP_URL}/api/v1/user/google/callback`,
     scope:        "openid email profile",
   
     // Auth endpoints (stable as of 2026)
@@ -26,9 +27,9 @@ export const GOOGLE = {
   };
   
   export const GITHUB = {
-    clientId:     process.env.GITHUB_CLIENT_ID!,
-    clientSecret: process.env.GITHUB_CLIENT_SECRET!,
-    redirectUri:  `${process.env.APP_URL}/api/v1/user/github/callback`,
+    clientId:     env.GITHUB_CLIENT_ID ?? "",
+    clientSecret: env.GITHUB_CLIENT_SECRET ?? "",
+    redirectUri:  `${env.APP_URL}/api/v1/user/github/callback`,
     scope:        "read:user user:email",
   
     // Auth endpoints

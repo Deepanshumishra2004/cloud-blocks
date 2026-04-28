@@ -15,6 +15,7 @@ import {
   updateMe,
 } from "../controller/user.controller";
 import { authMiddleware } from "../middleware/authMiddleware";
+import { authLimiter } from "../middleware/rateLimiters";
 import { SIGNIN, SIGNUP } from "../config/config";
 import {
   activateAiCredential as activateAiCredentialHandler,
@@ -25,8 +26,8 @@ import {
 
 const userRoutes = Router();
 
-userRoutes.post(SIGNUP, signup);
-userRoutes.post(SIGNIN, signin);
+userRoutes.post(SIGNUP, authLimiter, signup);
+userRoutes.post(SIGNIN, authLimiter, signin);
 userRoutes.post("/signout", signout);
 userRoutes.get("/me", authMiddleware, me);
 userRoutes.get("/session-token", authMiddleware, sessionToken);
@@ -38,9 +39,9 @@ userRoutes.post("/ai-credentials", authMiddleware, createAiCredentialHandler);
 userRoutes.post("/ai-credentials/activate", authMiddleware, activateAiCredentialHandler);
 userRoutes.delete("/ai-credentials/:credentialId", authMiddleware, deleteAiCredentialHandler);
 
-userRoutes.get("/google", googleInit);
-userRoutes.get("/google/callback", googleCallback);
-userRoutes.get("/github", githubInit);
-userRoutes.get("/github/callback", githubCallback);
+userRoutes.get("/google", authLimiter, googleInit);
+userRoutes.get("/google/callback", authLimiter, googleCallback);
+userRoutes.get("/github", authLimiter, githubInit);
+userRoutes.get("/github/callback", authLimiter, githubCallback);
 
 export default userRoutes;

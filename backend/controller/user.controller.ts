@@ -11,6 +11,8 @@ import {
   exchangeGoogleCode, getGoogleProfile,
   exchangeGithubCode, getGithubProfile,
 } from "../services/oauth.service";
+import { env, isProd } from "../config/env";
+import { logger } from "../lib/logger";
 
 /* ─────────────────────────────────────────────────────────────
    HELPERS
@@ -34,15 +36,13 @@ async function deriveUniqueUsername(base: string): Promise<string> {
 }
 
 function buildAuthCookieOptions(): CookieOptions {
-  const cookieDomain = process.env.AUTH_COOKIE_DOMAIN;
-
   return {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: isProd,
     sameSite: "lax",
     maxAge: 7 * 24 * 60 * 60 * 1000,
     path: "/",
-    ...(cookieDomain ? { domain: cookieDomain } : {}),
+    ...(env.AUTH_COOKIE_DOMAIN ? { domain: env.AUTH_COOKIE_DOMAIN } : {}),
   };
 }
 
@@ -131,7 +131,7 @@ export const signup = async (req: Request, res: Response) => {
     sendTokenCookie(res, token);
     return res.status(201).json({ message: "Account created", user });
   } catch (err) {
-    console.error("[signup]", err);
+    logger.error("[signup]", err);
     return res.status(500).json({ message: "Signup failed" });
   }
 };
@@ -186,7 +186,7 @@ export const signin = async (req: Request, res: Response) => {
     });
     
   } catch (err) {
-    console.error("[signin]", err);
+    logger.error("[signin]", err);
     return res.status(500).json({ message: "Signin failed" });
   }
 };
@@ -255,7 +255,7 @@ export const updateMe = async (req: Request, res: Response) => {
 
     return res.json({ user });
   } catch (err) {
-    console.error("[updateMe]", err);
+    logger.error("[updateMe]", err);
     return res.status(500).json({ message: "Failed to update profile" });
   }
 };
@@ -274,7 +274,7 @@ export const deleteMe = async (req: Request, res: Response) => {
     clearTokenCookie(res);
     return res.status(200).json({ message: "Account deleted" });
   } catch (err) {
-    console.error("[deleteMe]", err);
+    logger.error("[deleteMe]", err);
     return res.status(500).json({ message: "Failed to delete account" });
   }
 };
@@ -327,7 +327,7 @@ export const changePassword = async (req: Request, res: Response) => {
 
     return res.json({ message: "Password changed successfully" });
   } catch (err) {
-    console.error("[changePassword]", err);
+    logger.error("[changePassword]", err);
     return res.status(500).json({ message: "Failed to change password" });
   }
 };
@@ -343,12 +343,12 @@ export const googleInit = async (_req: Request, res: Response) => {
 
 export const googleCallback = async (req: Request, res: Response) => {
   const { code, error, state } = req.query as Record<string, string>;
-  const fe = process.env.FRONTEND_URL ?? "http://localhost:3000";
+  const fe = env.FRONTEND_URL;
 
   if (error || !code) return res.redirect(`${fe}/callback?error=oauth_denied`);
 
   if (!await consumeOAuthState(state)) {
-    console.warn("[googleCallback] Invalid or expired state");
+    logger.warn("[googleCallback] Invalid or expired state");
     return res.redirect(`${fe}/callback?error=oauth_failed`);
   }
 
@@ -394,7 +394,7 @@ export const googleCallback = async (req: Request, res: Response) => {
     sendTokenCookie(res, token);
     return res.redirect(`${fe}/callback`);
   } catch (err) {
-    console.error("[googleCallback]", err);
+    logger.error("[googleCallback]", err);
     return res.redirect(`${fe}/callback?error=oauth_failed`);
   }
 };
@@ -410,12 +410,12 @@ export const githubInit = async (_req: Request, res: Response) => {
 
 export const githubCallback = async (req: Request, res: Response) => {
   const { code, error, state } = req.query as Record<string, string>;
-  const fe = process.env.FRONTEND_URL ?? "http://localhost:3000";
+  const fe = env.FRONTEND_URL;
 
   if (error || !code) return res.redirect(`${fe}/callback?error=oauth_denied`);
 
   if (!await consumeOAuthState(state)) {
-    console.warn("[githubCallback] Invalid or expired state");
+    logger.warn("[githubCallback] Invalid or expired state");
     return res.redirect(`${fe}/callback?error=oauth_failed`);
   }
 
@@ -453,7 +453,7 @@ export const githubCallback = async (req: Request, res: Response) => {
     sendTokenCookie(res, token);
     return res.redirect(`${fe}/callback`);
   } catch (err) {
-    console.error("[githubCallback]", err);
+    logger.error("[githubCallback]", err);
     return res.redirect(`${fe}/callback?error=oauth_failed`);
   }
 };

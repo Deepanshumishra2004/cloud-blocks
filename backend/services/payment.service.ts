@@ -2,6 +2,7 @@
 
 import { stripe } from "../lib/stripe";
 import { prisma } from "../lib/prisma";
+import { env } from "../config/env";
 
 type BillingCycleType = "MONTHLY" | "YEAR";
 
@@ -15,10 +16,7 @@ export const createCheckoutSession = async (
   
     if (!plan) throw new Error("Plan not found");
 
-    const clientUrl = process.env.CLIENT_URL;
-    if (!clientUrl) {
-      throw new Error("CLIENT_URL is not configured");
-    }
+    const clientUrl = env.CLIENT_URL ?? env.FRONTEND_URL;
   
     return stripe.checkout.sessions.create({
       mode: "subscription",

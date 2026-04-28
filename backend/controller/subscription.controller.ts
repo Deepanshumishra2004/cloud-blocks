@@ -2,8 +2,10 @@
 import type { Request, Response } from "express";
 import Stripe from "stripe";
 import { prisma } from "../lib/prisma";
+import { env } from "../config/env";
+import { logger } from "../lib/logger";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+const stripe = new Stripe(env.STRIPE_SECRET_KEY, {
   apiVersion: "2026-01-28.clover",
 });
 
@@ -27,7 +29,7 @@ export const getUserSubscription = async (req: Request, res: Response) => {
 
     return res.json({ subscription: sub });
   } catch (err) {
-    console.error("[getUserSubscription]", err);
+    logger.error("[getUserSubscription]", err);
     return res.status(500).json({ message: "Failed to fetch subscription" });
   }
 };
@@ -71,7 +73,7 @@ export const cancelSubscription = async (req: Request, res: Response) => {
       subscription: updated,
     });
   } catch (err) {
-    console.error("[cancelSubscription]", err);
+    logger.error("[cancelSubscription]", err);
     return res.status(500).json({ message: "Failed to cancel subscription" });
   }
 };

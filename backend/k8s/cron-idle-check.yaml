@@ -1,0 +1,31 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: repl-idle-check
+  namespace: default
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid        # skip if previous run still in progress
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0              # don't retry on failure; next minute will re-run
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: cron-runner
+              image: your-registry/cloud-blocks-backend:latest
+              command: ["bun", "worker/cron-runner.ts"]
+              env:
+                - name: REDIS_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: cloud-blocks-secrets
+                      key: REDIS_URL
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: cloud-blocks-secrets
+                      key: DATABASE_URL

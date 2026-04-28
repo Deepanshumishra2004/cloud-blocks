@@ -3,10 +3,10 @@ import { PAYMENT, PLAN, REPL, SUBSCRIPTION, USER } from "../config/config";
 import userRoutes from "./user.route";
 import replRoutes from "./repl.route";
 import planRoutes from "./plan.route";
-import subscriptionRoutes from "./subcription.route";
+import subscriptionRoutes from "./subscription.route";
 import paymentRoutes from "./payment.route";
 import { authMiddleware } from "../middleware/authMiddleware";
-import { requireActiveSubscription } from "../middleware/activeSubcription";
+import { requireActiveSubscription } from "../middleware/activeSubscription";
 
 const apiRoutes = Router();
 

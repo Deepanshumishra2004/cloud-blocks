@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { env } from "../config/env";
 
 export const AI_PROVIDERS = ["GEMINI", "OPENAI", "ANTHROPIC", "DEEPSEEK"] as const;
 
@@ -79,13 +80,10 @@ export function extractGeminiText(payload: GeminiResponse): string {
 }
 
 export function getRequiredAiCredentialSecret(): string {
-  const secret = process.env.AI_CREDENTIAL_SECRET;
-
-  if (!secret) {
+  if (!env.AI_CREDENTIAL_SECRET) {
     throw new Error("AI credentials are not configured on the server");
   }
-
-  return secret;
+  return env.AI_CREDENTIAL_SECRET;
 }
 
 export async function generateWithProvider(params: {

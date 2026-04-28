@@ -1,5 +1,7 @@
+import { env } from "./env";
+
 // ── Server ───────────────────────────────────────────────────
-export const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
+export const PORT = env.PORT;
 
 // ── API prefix ───────────────────────────────────────────────
 export const API = "/api/v1";

@@ -4,8 +4,10 @@ import Stripe from "stripe";
 import { prisma } from "../lib/prisma";
 import { BillingCycle, PlanName } from "../generated/prisma/enums";
 import z from "zod";
+import { env } from "../config/env";
+import { logger } from "../lib/logger";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+const stripe = new Stripe(env.STRIPE_SECRET_KEY, {
   apiVersion: "2026-01-28.clover",
 });
 
@@ -54,7 +56,7 @@ export const createCheckout = async (req: Request, res: Response) => {
     });
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    const fe = process.env.FRONTEND_URL ?? "http://localhost:3001";
+    const fe = env.FRONTEND_URL;
 
     const session = await stripe.checkout.sessions.create({
       mode:                "subscription",
@@ -71,7 +73,7 @@ export const createCheckout = async (req: Request, res: Response) => {
 
     return res.json({ url: session.url });
   } catch (err) {
-    console.error("[createCheckout]", err);
+    logger.error("[createCheckout]", err);
     return res.status(500).json({ message: "Failed to create checkout session" });
   }
 };
@@ -100,10 +102,10 @@ export const stripeWebhook = async (req: Request, res: Response) => {
     event = stripe.webhooks.constructEvent(
       req.body,
       sig,
-      process.env.STRIPE_WEBHOOK_SECRET!
+      env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err: any) {
-    console.error("[webhook] Signature verification failed:", err.message);
+    logger.error("[webhook] Signature verification failed:", err.message);
     return res.status(400).json({ message: `Webhook error: ${err.message}` });
   }
 
@@ -119,7 +121,7 @@ export const stripeWebhook = async (req: Request, res: Response) => {
         const planId = session.metadata?.planId;
 
         if (!userId || !planId) {
-          console.error("[webhook] Missing userId or planId in metadata");
+          logger.error("[webhook] Missing userId or planId in metadata");
           break;
         }
 
@@ -238,7 +240,7 @@ export const stripeWebhook = async (req: Request, res: Response) => {
 
     return res.status(200).json({ received: true });
   } catch (err) {
-    console.error("[webhook] Handler error:", err);
+    logger.error("[webhook] Handler error:", err);
     return res.status(500).json({ message: "Webhook processing failed" });
   }
 };

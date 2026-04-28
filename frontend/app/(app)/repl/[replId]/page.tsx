@@ -29,6 +29,8 @@ import {
   ExternalLinkIcon,
   FileIcon,
   PlayIcon,
+  PlusIcon,
+  RefreshIcon,
 } from "@/components/replEditor/icons";
 import { PanelTab } from "@/components/replEditor/PanelTab";
 import {
@@ -125,6 +127,18 @@ export default function ReplEditorPage() {
   const patchTimerRef = useRef<number | null>(null);
   const fileVersionRef = useRef<Map<string, number>>(new Map());
   const pendingFileRef = useRef<string | null>(null);
+  const replRef = useRef<Repl | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const intentionalCloseRef = useRef(false);
+  const fileContentsCache = useRef<Map<string, string>>(new Map());
+  const dirtyFilesRef = useRef<Set<string>>(new Set());
+
+  const [openTabs, setOpenTabs] = useState<string[]>([]);
+  const [newFileName, setNewFileName] = useState<string | null>(null);
+
+  const MAX_RECONNECT = 3;
+  const RECONNECT_BASE_MS = 2_000;
 
   const flushQueuedPatches = useCallback(
     (path: string) => {
@@ -190,6 +204,7 @@ export default function ReplEditorPage() {
       wsRef.current = ws;
 
       ws.onopen = () => {
+        reconnectAttemptsRef.current = 0;
         ws.send(JSON.stringify({ type: "status", status: "RUNNING" }));
         ws.send(JSON.stringify({ type: "file:list" }));
       };
@@ -237,6 +252,11 @@ export default function ReplEditorPage() {
 
             pendingFileRef.current = null;
             fileVersionRef.current.set(message.path, message.version);
+            fileContentsCache.current.set(message.path, message.content);
+            dirtyFilesRef.current.delete(message.path);
+            setOpenTabs((prev) =>
+              prev.includes(message.path) ? prev : [...prev, message.path],
+            );
             ignoreEditorChangesRef.current = true;
             setOpenFile(message.path);
             setFileContent(message.content);
@@ -244,6 +264,24 @@ export default function ReplEditorPage() {
             window.setTimeout(() => {
               ignoreEditorChangesRef.current = false;
             }, 0);
+            break;
+
+          case "file:renamed":
+            fileContentsCache.current.set(
+              message.newPath,
+              fileContentsCache.current.get(message.oldPath) ?? "",
+            );
+            fileContentsCache.current.delete(message.oldPath);
+            if (dirtyFilesRef.current.has(message.oldPath)) {
+              dirtyFilesRef.current.add(message.newPath);
+              dirtyFilesRef.current.delete(message.oldPath);
+            }
+            setOpenTabs((prev) =>
+              prev.map((p) => (p === message.oldPath ? message.newPath : p)),
+            );
+            setOpenFile((prev) =>
+              prev === message.oldPath ? message.newPath : prev,
+            );
             break;
           case "file:patched":
             fileVersionRef.current.set(message.path, message.version);
@@ -257,12 +295,12 @@ export default function ReplEditorPage() {
             if (message.status === "RUNNING") setStarting(false);
             if (message.status === "STOPPED") {
               setStopping(false);
-              setPreviewFrameKey((value) => value + 1);
+              setPreviewFrameKey((value: number) => value + 1);
             }
             break;
           case "preview:url":
             setPreviewUrl(message.url);
-            setPreviewFrameKey((value) => value + 1);
+            setPreviewFrameKey((value: number) => value + 1);
             setActivePanel("preview");
             break;
           case "error":
@@ -271,11 +309,31 @@ export default function ReplEditorPage() {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         wsRef.current = null;
-        setStatus("STOPPED");
         setStarting(false);
         setStopping(false);
+
+        const wasIntentional = intentionalCloseRef.current || event.code === 4001;
+        intentionalCloseRef.current = false;
+
+        if (wasIntentional || !replRef.current) {
+          setStatus("STOPPED");
+          return;
+        }
+
+        if (reconnectAttemptsRef.current < MAX_RECONNECT) {
+          const delay = RECONNECT_BASE_MS * 2 ** reconnectAttemptsRef.current;
+          reconnectAttemptsRef.current += 1;
+          toast.error(`Terminal disconnected — reconnecting (${reconnectAttemptsRef.current}/${MAX_RECONNECT})…`);
+          reconnectTimerRef.current = window.setTimeout(() => {
+            if (replRef.current) connectWs(replRef.current);
+          }, delay);
+        } else {
+          reconnectAttemptsRef.current = 0;
+          setStatus("STOPPED");
+          toast.error("Terminal disconnected — start the repl to reconnect");
+        }
       };
 
       ws.onerror = () => {
@@ -288,6 +346,16 @@ export default function ReplEditorPage() {
   useEffect(() => {
     openFileRef.current = openFile;
   }, [openFile]);
+
+  useEffect(() => {
+    replRef.current = repl;
+  }, [repl]);
+
+  useEffect(() => {
+    if (!openFile) return;
+    if (isDirty) dirtyFilesRef.current.add(openFile);
+    else dirtyFilesRef.current.delete(openFile);
+  }, [isDirty, openFile]);
 
   useEffect(() => {
     fetchReplById(replId)
@@ -305,7 +373,11 @@ export default function ReplEditorPage() {
       .catch(() => toast.error("Failed to load repl"))
       .finally(() => setLoading(false));
 
-    return () => wsRef.current?.close();
+    return () => {
+      intentionalCloseRef.current = true;
+      if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
+      wsRef.current?.close();
+    };
   }, [replId, connectWs, toast]);
 
   useEffect(() => {
@@ -328,63 +400,78 @@ export default function ReplEditorPage() {
   useEffect(() => {
     if (!termRef.current) return;
 
-    let terminal: TerminalLike | null = null;
+    let mounted = true;
     let resizeObserver: ResizeObserver | null = null;
 
     (async () => {
-      const { Terminal } = await import("@xterm/xterm");
-      const { FitAddon } = await import("@xterm/addon-fit");
-      const { WebLinksAddon } = await import("@xterm/addon-web-links");
+      try {
+        const { Terminal } = await import("@xterm/xterm");
+        const { FitAddon } = await import("@xterm/addon-fit");
+        const { WebLinksAddon } = await import("@xterm/addon-web-links");
 
-      const createdTerminal = new Terminal({
-        theme: {
-          background: "#0d0d0f",
-          foreground: "#e8e8ec",
-          cursor: "#7c6af7",
-          black: "#1a1a1f",
-          red: "#f87171",
-          green: "#4ade80",
-          yellow: "#facc15",
-          blue: "#818cf8",
-          magenta: "#c084fc",
-          cyan: "#22d3ee",
-          white: "#e8e8ec",
-          brightBlack: "#404050",
-          brightWhite: "#ffffff",
-        },
-        fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-        fontSize: 13,
-        lineHeight: 1.4,
-        cursorBlink: true,
-        scrollback: 2000,
-      });
+        const terminalInstance = new Terminal({
+          theme: {
+            background: "#0d0d0f",
+            foreground: "#e8e8ec",
+            cursor: "#7c6af7",
+            black: "#1a1a1f",
+            red: "#f87171",
+            green: "#4ade80",
+            yellow: "#facc15",
+            blue: "#818cf8",
+            magenta: "#c084fc",
+            cyan: "#22d3ee",
+            white: "#e8e8ec",
+            brightBlack: "#404050",
+            brightWhite: "#ffffff",
+          },
+          fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+          fontSize: 13,
+          lineHeight: 1.4,
+          cursorBlink: true,
+          scrollback: 2000,
+        }) as TerminalLike;
 
-      const fitAddon = new FitAddon() as FitAddonLike;
-      const terminalInstance = createdTerminal as TerminalLike;
-      terminalInstance.loadAddon(fitAddon);
-      terminalInstance.loadAddon(new WebLinksAddon());
-      terminalInstance.open(termRef.current!);
-      fitAddon.fit();
+        const fitAddon = new FitAddon() as FitAddonLike;
+        terminalInstance.loadAddon(fitAddon);
+        terminalInstance.loadAddon(new WebLinksAddon());
+        terminalInstance.open(termRef.current!);
+        fitAddon.fit();
 
-      if (outputBufferRef.current.length > 0) {
-        outputBufferRef.current.forEach((line) => terminalInstance.write(line));
+        if (outputBufferRef.current.length > 0) {
+          outputBufferRef.current.forEach((line) => terminalInstance.write(line));
+          outputBufferRef.current = [];
+        }
+
+        terminalInstance.onData((data: string) => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: "terminal:input", data }));
+          }
+        });
+
+        if (!mounted) {
+          terminalInstance.dispose();
+          return;
+        }
+
+        xtermRef.current = terminalInstance;
+        fitAddonRef.current = fitAddon;
+
+        resizeObserver = new ResizeObserver(() => {
+          try { fitAddonRef.current?.fit(); } catch { /* terminal may be disposed */ }
+        });
+        resizeObserver.observe(termRef.current!);
+      } catch (err) {
+        console.error("[terminal] init failed:", err);
       }
-
-      terminalInstance.onData((data: string) => {
-        wsRef.current?.send(JSON.stringify({ type: "terminal:input", data }));
-      });
-
-      terminal = terminalInstance;
-      xtermRef.current = terminalInstance;
-      fitAddonRef.current = fitAddon;
-
-      resizeObserver = new ResizeObserver(() => fitAddonRef.current?.fit());
-      resizeObserver.observe(termRef.current!);
     })();
 
     return () => {
+      mounted = false;
       resizeObserver?.disconnect();
-      terminal?.dispose();
+      xtermRef.current?.dispose();
+      xtermRef.current = null;
+      fitAddonRef.current = null;
     };
   }, []);
 
@@ -478,21 +565,92 @@ export default function ReplEditorPage() {
     [fileContent],
   );
 
-  const handleFileClick = async (path: string) => {
+  const handleTabClick = useCallback(
+    (tabPath: string) => {
+      if (tabPath === openFile) return;
+      if (openFile) fileContentsCache.current.set(openFile, fileContent);
+      const cached = fileContentsCache.current.get(tabPath);
+      setOpenFile(tabPath);
+      if (cached !== undefined) {
+        ignoreEditorChangesRef.current = true;
+        setFileContent(cached);
+        setIsDirty(dirtyFilesRef.current.has(tabPath));
+        window.setTimeout(() => { ignoreEditorChangesRef.current = false; }, 0);
+      } else if (wsRef.current?.readyState === WebSocket.OPEN) {
+        openFileFromWs(wsRef.current, tabPath);
+      }
+    },
+    [openFile, fileContent],
+  );
+
+  const handleTabClose = useCallback(
+    (tabPath: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      setOpenTabs((prev) => {
+        const next = prev.filter((p) => p !== tabPath);
+        if (tabPath === openFile) {
+          const newActive = next[next.length - 1] ?? null;
+          setOpenFile(newActive);
+          if (newActive) {
+            const cached = fileContentsCache.current.get(newActive);
+            if (cached !== undefined) {
+              ignoreEditorChangesRef.current = true;
+              setFileContent(cached);
+              setIsDirty(dirtyFilesRef.current.has(newActive));
+              window.setTimeout(() => { ignoreEditorChangesRef.current = false; }, 0);
+            }
+          } else {
+            setFileContent("");
+            setIsDirty(false);
+          }
+        }
+        return next;
+      });
+      fileContentsCache.current.delete(tabPath);
+      dirtyFilesRef.current.delete(tabPath);
+    },
+    [openFile],
+  );
+
+  const handleCreateFile = useCallback((name: string) => {
+    wsRef.current?.send(JSON.stringify({ type: "file:create", path: name }));
+  }, []);
+
+  const handleDeleteFile = useCallback(
+    (filePath: string) => {
+      if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+      wsRef.current.send(JSON.stringify({ type: "file:delete", path: filePath }));
+      setOpenTabs((prev) => {
+        const next = prev.filter((p) => p !== filePath);
+        if (filePath === openFile) {
+          const newActive = next[next.length - 1] ?? null;
+          setOpenFile(newActive);
+          if (newActive) {
+            const cached = fileContentsCache.current.get(newActive);
+            if (cached !== undefined) { setFileContent(cached); setIsDirty(dirtyFilesRef.current.has(newActive)); }
+          } else { setFileContent(""); setIsDirty(false); }
+        }
+        return next;
+      });
+      fileContentsCache.current.delete(filePath);
+      dirtyFilesRef.current.delete(filePath);
+    },
+    [openFile],
+  );
+
+  const handleRenameFile = useCallback((oldPath: string, newPath: string) => {
+    wsRef.current?.send(JSON.stringify({ type: "file:rename", oldPath, newPath }));
+  }, []);
+
+  const handleFileClick = async (filePath: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-
-    if (isDirty) {
-      await handleSave();
+    if (filePath === openFile) return;
+    const cached = fileContentsCache.current.get(filePath);
+    if (cached !== undefined) {
+      handleTabClick(filePath);
+    } else {
+      openFileFromWs(wsRef.current, filePath);
     }
-
-    ignoreEditorChangesRef.current = true;
-    setOpenFile(path);
-    setFileContent("");
-    window.setTimeout(() => {
-      ignoreEditorChangesRef.current = false;
-    }, 0);
-
-    openFileFromWs(wsRef.current, path);
   };
 
   const handleRun = async () => {
@@ -502,7 +660,7 @@ export default function ReplEditorPage() {
     try {
       const runtime = await startRepl(repl.id);
       setPreviewUrl(runtime.previewUrl);
-      setPreviewFrameKey((value) => value + 1);
+      setPreviewFrameKey((value: number) => value + 1);
       setStatus("RUNNING");
       setRepl((prev) =>
         prev
@@ -537,9 +695,11 @@ export default function ReplEditorPage() {
     setStopping(true);
     try {
       await stopRepl(repl.id);
+      intentionalCloseRef.current = true;
+      wsRef.current?.close();
       setStatus("STOPPED");
       setPreviewUrl(null);
-      setPreviewFrameKey((value) => value + 1);
+      setPreviewFrameKey((value: number) => value + 1);
       setRepl((prev) =>
         prev
           ? {
@@ -551,7 +711,6 @@ export default function ReplEditorPage() {
             }
           : prev,
       );
-      wsRef.current?.close();
     } catch {
       toast.error("Failed to stop repl");
       setStopping(false);
@@ -764,7 +923,36 @@ export default function ReplEditorPage() {
             <span className="text-2xs font-semibold text-white/30 uppercase tracking-wider">
               Explorer
             </span>
+            {status === "RUNNING" && (
+              <button
+                onClick={() => setNewFileName("")}
+                className="text-white/30 hover:text-white/70 transition-colors"
+                title="New file"
+              >
+                <PlusIcon />
+              </button>
+            )}
           </div>
+
+          {newFileName !== null && (
+            <div className="px-2 py-1.5 border-b border-white/6">
+              <input
+                autoFocus
+                value={newFileName}
+                onChange={(e) => setNewFileName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newFileName.trim()) {
+                    handleCreateFile(newFileName.trim());
+                    setNewFileName(null);
+                  }
+                  if (e.key === "Escape") setNewFileName(null);
+                }}
+                onBlur={() => setNewFileName(null)}
+                placeholder="filename.ts"
+                className="w-full bg-white/8 text-white text-xs px-2 py-1 rounded border border-white/15 outline-none font-mono"
+              />
+            </div>
+          )}
 
           {files.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-8 px-3 text-center">
@@ -784,6 +972,8 @@ export default function ReplEditorPage() {
                   depth={0}
                   activeFile={openFile}
                   onSelect={handleFileClick}
+                  onDelete={handleDeleteFile}
+                  onRename={handleRenameFile}
                 />
               ))}
             </div>
@@ -796,15 +986,31 @@ export default function ReplEditorPage() {
           <PanelGroup orientation="vertical" className="flex-1 min-h-0">
             <Panel minSize={30}>
               <div className="flex flex-col h-full overflow-hidden">
-                {openFile && (
+                {openTabs.length > 0 && (
                   <div className="h-8 flex items-center border-b border-white/8 bg-[#111114] shrink-0 px-1 gap-0.5 overflow-x-auto">
-                    <div className="flex items-center gap-1.5 px-3 py-1 rounded-t-md bg-[#0d0d0f] border border-white/10 border-b-0 text-xs text-white/80">
-                      <FileIcon ext={openFile.split(".").pop() ?? ""} />
-                      <span className="font-mono">{openFile.split("/").pop()}</span>
-                      {isDirty && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-[var(--brand)] ml-0.5" />
-                      )}
-                    </div>
+                    {openTabs.map((tabPath) => (
+                      <div
+                        key={tabPath}
+                        onClick={() => handleTabClick(tabPath)}
+                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-t-sm border border-b-0 text-xs cursor-pointer group shrink-0 ${
+                          tabPath === openFile
+                            ? "bg-[#0d0d0f] border-white/10 text-white/80"
+                            : "border-transparent text-white/35 hover:text-white/65"
+                        }`}
+                      >
+                        <FileIcon ext={tabPath.split(".").pop() ?? ""} />
+                        <span className="font-mono max-w-[120px] truncate">{tabPath.split("/").pop()}</span>
+                        {(tabPath === openFile ? isDirty : dirtyFilesRef.current.has(tabPath)) && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-[var(--brand)] shrink-0" />
+                        )}
+                        <button
+                          onClick={(e) => handleTabClose(tabPath, e)}
+                          className="w-3.5 h-3.5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 text-white/40 hover:text-white/80 hover:bg-white/10 transition-all ml-0.5 shrink-0 leading-none"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 )}
                 <div className="flex-1 overflow-hidden" style={{ minHeight: 0 }}>
@@ -915,14 +1121,23 @@ export default function ReplEditorPage() {
                 Output
               </PanelTab>
               {previewUrl && (
-                <a
-                  href={previewUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="ml-auto mr-1 text-2xs text-white/30 hover:text-white/70 transition-colors flex items-center gap-1"
-                >
-                  <ExternalLinkIcon /> Open
-                </a>
+                <div className="ml-auto flex items-center gap-1 mr-1">
+                  <button
+                    onClick={() => setPreviewFrameKey((k: number) => k + 1)}
+                    className="text-white/30 hover:text-white/70 transition-colors p-1"
+                    title="Refresh preview"
+                  >
+                    <RefreshIcon />
+                  </button>
+                  <a
+                    href={previewUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-2xs text-white/30 hover:text-white/70 transition-colors flex items-center gap-1"
+                  >
+                    <ExternalLinkIcon /> Open
+                  </a>
+                </div>
               )}
             </div>
 

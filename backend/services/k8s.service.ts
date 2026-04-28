@@ -1,57 +1,260 @@
 import * as k8s from "@kubernetes/client-node";
 
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
 const kc = new k8s.KubeConfig();
-kc.loadFromDefault();
+
+if (process.env.KUBERNETES_SERVICE_HOST && process.env.KUBERNETES_SERVICE_PORT) {
+  kc.loadFromCluster();
+} else {
+  kc.loadFromDefault();
+}
 
 const coreApi = kc.makeApiClient(k8s.CoreV1Api);
+const networkingApi = kc.makeApiClient(k8s.NetworkingV1Api);
 
-export const createReplPod = async (replId: string) => {
-    const pod: k8s.V1Pod = {
-        metadata: { name: `repl-${replId}`, namespace: "repls", labels: { replId } },
-        spec: {
-            runtimeClassName: "gvisor",
-            nodeSelector: { pool: "repl_workers" },
-            containers: [{
-                name: "runner",
-                image: "deepanshumishra2004/execution_layer:latest",
-                env: [
-                    { name : "REPL_ID", value : replId },
-                    { name : "S3_BUCKET", value : process.env.S3_BUCKET },
-                    { name : "REDIS_URL", value : process.env.REDIS_URL }
-                ],
-                resources: {
-                    limits: { cpu: "500m", memory: "512Mi" },
-                    requests: { cpu: "100m", memory: "128Mi" }
+const NAMESPACE = process.env.REPL_NAMESPACE || "repls";
+const REPL_IMAGE = process.env.REPL_IMAGE || "deepanshumishra2004/execution_layer:latest";
+const BASE_DOMAIN = process.env.REPL_BASE_DOMAIN || "127.0.0.1.nip.io";
+const REPL_RUNTIME_SECRET = process.env.REPL_RUNTIME_SECRET || "repl-runtime-secrets";
+const inferPublicProtocol = () => {
+  if (process.env.REPL_PUBLIC_PROTOCOL) return process.env.REPL_PUBLIC_PROTOCOL;
+
+  try {
+    return new URL(process.env.APP_URL || "http://localhost").protocol.replace(":", "");
+  } catch {
+    return "http";
+  }
+};
+
+const REPL_PUBLIC_PROTOCOL = inferPublicProtocol();
+const REPL_PUBLIC_WS_PROTOCOL =
+  process.env.REPL_PUBLIC_WS_PROTOCOL ||
+  (REPL_PUBLIC_PROTOCOL === "https" ? "wss" : "ws");
+
+const isAlreadyExistsError = (error: unknown): boolean => {
+  const e = error as {
+    statusCode?: number;
+    body?: { reason?: string; message?: string };
+    message?: string;
+  };
+
+  return (
+    e?.statusCode === 409 ||
+    e?.body?.reason === "AlreadyExists" ||
+    (typeof e?.message === "string" && e.message.includes("AlreadyExists"))
+  );
+};
+
+const safeReplId = (replId: string) => replId.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+
+export const getReplRuntimeUrls = (replId: string) => {
+  const cleanReplId = safeReplId(replId);
+  const host = `repl-${cleanReplId}.${BASE_DOMAIN}`;
+
+  return {
+    replId: cleanReplId,
+    host,
+    previewUrl: `${REPL_PUBLIC_PROTOCOL}://${host}/`,
+    wsUrl: `${REPL_PUBLIC_WS_PROTOCOL}://${host}/ws`,
+  };
+};
+
+export const provisionReplRuntime = async (replId: string, type: string) => {
+  const cleanReplId = safeReplId(replId);
+  const podName = `repl-${cleanReplId}`;
+  const serviceName = `repl-${cleanReplId}-svc`;
+  const ingressName = `repl-${cleanReplId}-ing`;
+  const { host, previewUrl, wsUrl } = getReplRuntimeUrls(cleanReplId);
+  const normalizedType = type.toLowerCase();
+
+  const pod: k8s.V1Pod = {
+    metadata: {
+      name: podName,
+      namespace: NAMESPACE,
+      labels: {
+        app: "repl-runtime",
+        replId: cleanReplId,
+      },
+    },
+    spec: {
+      restartPolicy: "Never",
+      containers: [
+        {
+          name: "runner",
+          image: REPL_IMAGE,
+          imagePullPolicy: "Always",
+          env: [
+            { name: "REPL_ID", value: cleanReplId },
+            { name: "REPL_TYPE", value: normalizedType },
+            { name: "S3_BUCKET", value: process.env.S3_BUCKET || "" },
+            { name: "REDIS_URL", value: process.env.REDIS_URL || "" },
+            { name: "AWS_REGION", value: process.env.AWS_REGION || "ap-south-1" },
+          ],
+          envFrom: [{ secretRef: { name: REPL_RUNTIME_SECRET } }],
+          ports: [
+            { name: "ws", containerPort: 8080 },
+            { name: "preview", containerPort: 3002 },
+          ],
+          resources: {
+            requests: {
+              cpu: "100m",
+              memory: "128Mi",
+            },
+            limits: {
+              cpu: "500m",
+              memory: "512Mi",
+            },
+          },
+          readinessProbe: {
+            tcpSocket: {
+              port: 8080,
+            },
+            initialDelaySeconds: 5,
+            periodSeconds: 5,
+          },
+        },
+      ],
+    },
+  };
+
+  const svc: k8s.V1Service = {
+    metadata: {
+      name: serviceName,
+      namespace: NAMESPACE,
+      labels: {
+        app: "repl-runtime",
+        replId: cleanReplId,
+      },
+    },
+    spec: {
+      selector: {
+        replId: cleanReplId,
+      },
+      ports: [
+        {
+          name: "preview",
+          port: 3002,
+          targetPort: 3002,
+        },
+        {
+          name: "ws",
+          port: 8080,
+          targetPort: 8080,
+        },
+      ],
+      type: "ClusterIP",
+    },
+  };
+
+  const ing: k8s.V1Ingress = {
+    metadata: {
+      name: ingressName,
+      namespace: NAMESPACE,
+      annotations: {
+        "nginx.ingress.kubernetes.io/proxy-read-timeout": "3600",
+        "nginx.ingress.kubernetes.io/proxy-send-timeout": "3600",
+        "nginx.ingress.kubernetes.io/proxy-http-version": "1.1",
+        "cert-manager.io/cluster-issuer": "selfsigned-issuer",
+      },
+    },
+    spec: {
+      ingressClassName: "nginx",
+      tls: [{ hosts: [host], secretName: `repl-${cleanReplId}-tls` }],
+      rules: [
+        {
+          host,
+          http: {
+            paths: [
+              {
+                path: "/ws",
+                pathType: "Prefix",
+                backend: {
+                  service: {
+                    name: serviceName,
+                    port: {
+                      number: 8080,
+                    },
+                  },
                 },
-                ports: [
-                    { containerPort: 8080 },
-                    { containerPort: 3000 }
-                ]
-            }],
+              },
+              {
+                path: "/",
+                pathType: "Prefix",
+                backend: {
+                  service: {
+                    name: serviceName,
+                    port: {
+                      number: 3002,
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+  };
 
-        }
-    }
+  try {
+    await coreApi.createNamespacedPod({
+      namespace: NAMESPACE,
+      body: pod,
+    });
+  } catch (e) {
+    if (!isAlreadyExistsError(e)) throw e;
+    console.log(`[k8s] pod already exists for repl ${cleanReplId}`);
+  }
 
-    const svc: k8s.V1Service = {
-        metadata: { name: `repl-${replId}-svc`, namespace: "repls" },
-        spec: {
-            selector: { replId },
-            ports: [
-                { name: "agent", port: 8080 },
-                { name: "preview", port: 3000 }
-            ]
-        }
-    }
+  try {
+    await coreApi.createNamespacedService({
+      namespace: NAMESPACE,
+      body: svc,
+    });
+  } catch (e) {
+    if (!isAlreadyExistsError(e)) throw e;
+    console.log(`[k8s] service already exists for repl ${cleanReplId}`);
+  }
 
-    await coreApi.createNamespacedPod({ namespace : "repls", body : pod });
-    await coreApi.createNamespacedService({ namespace: "repls", body: svc });
+  try {
+    await networkingApi.createNamespacedIngress({
+      namespace: NAMESPACE,
+      body: ing,
+    });
+  } catch (e) {
+    if (!isAlreadyExistsError(e)) throw e;
+    console.log(`[k8s] ingress already exists for repl ${cleanReplId}`);
+  }
 
-    return `repl-${replId}.xyz.com`;
-}
+  return {
+    replId: cleanReplId,
+    host,
+    previewUrl,
+    wsUrl,
+    serviceName,
+    podName,
+    ingressName,
+  };
+};
+
+export const createReplPod = provisionReplRuntime;
 
 export const deleteReplPod = async (replId: string) => {
-
-    await coreApi.deleteNamespacedPod({ name: `repl-${replId}`, namespace: "repls" }).catch(() => { })
-    await coreApi.deleteNamespacedService({ name: `repl-${replId}-svc`, namespace: "repls" }).catch(() => { })
-
-}
+    const cleanReplId = safeReplId(replId);
+    const podName = `repl-${cleanReplId}`;
+    const serviceName = `repl-${cleanReplId}-svc`;
+    const ingressName = `repl-${cleanReplId}-ing`;
+  
+    await networkingApi
+      .deleteNamespacedIngress({ name: ingressName, namespace: NAMESPACE })
+      .catch(() => {});
+  
+    await coreApi
+      .deleteNamespacedService({ name: serviceName, namespace: NAMESPACE })
+      .catch(() => {});
+  
+    await coreApi
+      .deleteNamespacedPod({ name: podName, namespace: NAMESPACE })
+      .catch(() => {});
+  };

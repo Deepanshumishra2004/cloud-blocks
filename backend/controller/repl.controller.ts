@@ -2,13 +2,14 @@
 import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { z }      from "zod";
-import { createReplPod } from "../services/k8s.service";
+import { deleteReplPod, getReplRuntimeUrls, provisionReplRuntime } from "../services/k8s.service";
+import { seedReplFromTemplate } from "../services/repl-storage.service";
 
 /* ─────────────────────────────────────────────────────────────
    VALIDATION
 ───────────────────────────────────────────────────────────── */
 
-const REPL_TYPES = ["NODE", "REACT", "NEXT"] as const;
+const REPL_TYPES = ["BUN", "JAVASCRIPT", "NODE", "REACT", "NEXT"] as const;
 
 const CreateReplSchema = z.object({
   name: z
@@ -84,7 +85,13 @@ export const getReplById = async (req: Request, res: Response) => {
   try {
     const repl = await ownedRepl((req as any).params.replId, (req as any).userId);
     if (!repl) return res.status(404).json({ message: "Repl not found" });
-    return res.json({ repl });
+
+    return res.json({
+      repl:
+        repl.status === "RUNNING"
+          ? { ...repl, ...getReplRuntimeUrls(repl.id) }
+          : repl,
+    });
   } catch (err) {
     console.error("[getReplById]", err);
     return res.status(500).json({ message: "Failed to fetch repl" });
@@ -131,6 +138,10 @@ export const createRepl = async (req: Request, res: Response) => {
         status: "STOPPED",
       },
       select: REPL_SELECT,
+    });
+
+    await seedReplFromTemplate(repl.id, repl.type).catch((error) => {
+      console.error("[createRepl:seedTemplate]", error);
     });
 
     return res.status(201).json({ repl });
@@ -202,14 +213,24 @@ export const startRepl = async (req: Request, res: Response) => {
       return res.status(409).json({ message: "Repl is already running" });
     }
 
+    let runtime;
     try {
-      await createReplPod(existing.id);
+      runtime = await provisionReplRuntime(existing.id, existing.type);
     } catch (provisionErr) {
       console.error("[startRepl:provision]", provisionErr);
-      return res.status(502).json({ message: "Failed to provision repl sandbox" });
-    }
 
-    
+      const e = provisionErr as {
+        statusCode?: number;
+        body?: { reason?: string; message?: string };
+        message?: string;
+      };
+
+      const detail = e?.body?.message || e?.message || "Unknown Kubernetes error";
+
+      return res.status(502).json({
+        message: `Failed to provision repl sandbox: ${detail}`,
+      });
+    }    
 
     const repl = await prisma.repl.update({
       where:  { id: existing.id },
@@ -217,7 +238,14 @@ export const startRepl = async (req: Request, res: Response) => {
       select: REPL_SELECT,
     });
 
-    return res.json({ repl });
+    return res.status(200).json({
+      message: "Repl started successfully",
+      replId: existing.id,
+      status: "RUNNING",
+      previewUrl: runtime.previewUrl,
+      wsUrl: runtime.wsUrl,
+      host: runtime.host,
+    });
   } catch (err) {
     console.error("[startRepl]", err);
     return res.status(500).json({ message: "Failed to start repl" });
@@ -237,8 +265,7 @@ export const stopRepl = async (req: Request, res: Response) => {
       return res.status(409).json({ message: "Repl is already stopped" });
     }
 
-    // TODO: teardown K8s pod / sandbox
-    // await k8s.deletePod(existing.id);
+    await deleteReplPod(existing.id);
 
     const repl = await prisma.repl.update({
       where:  { id: existing.id },

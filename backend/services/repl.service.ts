@@ -1,4 +1,5 @@
 import { redis } from "../lib/redis"
+import { prisma } from "../lib/prisma";
 import { createReplPod, deleteReplPod } from "./k8s.service";
 
 export const startRepl = async (replId: string, userId: string) => {
@@ -13,7 +14,7 @@ export const startRepl = async (replId: string, userId: string) => {
     })
     if (!repl || repl.userId !== userId) throw new Error("Repl not found");
 
-    const podUrl = await createReplPod(replId);
+    const podUrl = await createReplPod(replId, repl.type);
 
     await prisma?.repl.update({
         where: { id: replId },

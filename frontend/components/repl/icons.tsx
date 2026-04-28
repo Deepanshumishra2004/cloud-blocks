@@ -69,6 +69,26 @@ export function WarnIcon() {
 }
 
 export function RuntimeIcon({ type }: { type: ReplType | string }) {
+  if (type === "BUN") {
+    return (
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M9 8.5h3.5a2.75 2.75 0 0 1 0 5.5H9z" />
+        <path d="M9 14h4a2.25 2.25 0 0 1 0 4.5H9z" />
+      </svg>
+    );
+  }
+
+  if (type === "JAVASCRIPT") {
+    return (
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <rect x="4" y="4" width="16" height="16" rx="2" />
+        <path d="M10 8v7a2 2 0 0 1-2 2" />
+        <path d="M14 16c.3 1 1 1.5 2 1.5 1.2 0 2-.6 2-1.5 0-2-4-1.4-4-4 0-1.1 1-2 2.5-2 1.1 0 1.9.4 2.3 1.3" />
+      </svg>
+    );
+  }
+
   if (type === "REACT") {
     return (
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">

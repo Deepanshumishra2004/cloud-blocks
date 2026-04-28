@@ -9,6 +9,18 @@ export interface DashboardTemplate {
 
 export const DASHBOARD_TEMPLATES: DashboardTemplate[] = [
   {
+    type: "BUN",
+    label: "Bun",
+    description: "Fast Bun runtime",
+    className: "bg-[#fbf0df] border-[#f0c98a]",
+  },
+  {
+    type: "JAVASCRIPT",
+    label: "JavaScript",
+    description: "Plain JS starter",
+    className: "bg-[#f7df1e]/15 border-[#f7df1e]/35",
+  },
+  {
     type: "NODE",
     label: "Node.js",
     description: "Express API server",
@@ -29,6 +41,8 @@ export const DASHBOARD_TEMPLATES: DashboardTemplate[] = [
 ];
 
 export const REPL_TYPE_ICON_LABELS: Record<string, string> = {
+  BUN: "Bun",
+  JAVASCRIPT: "JavaScript",
   NODE: "Node",
   REACT: "React",
   NEXT: "Next",

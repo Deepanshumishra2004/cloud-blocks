@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { Repl } from "@/hooks/useRepls";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Misc";
@@ -8,6 +7,7 @@ import { cn } from "@/lib/cn";
 import { REPL_TYPE_ICON_LABELS } from "./constants";
 import { ReplTypeIcon } from "./icons";
 import { Section } from "./Section";
+import { Repl } from "@/lib/api";
 
 export function RecentReplsSection({
   repls,

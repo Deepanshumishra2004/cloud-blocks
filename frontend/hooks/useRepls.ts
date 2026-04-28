@@ -17,6 +17,11 @@ interface UseReplsReturn {
   renameRepl: (id: string, name: string) => Promise<void>;
 }
 
+function getApiErrorMessage(err: unknown, fallback: string): string {
+  const response = (err as { response?: { data?: { message?: string } } } | null)?.response;
+  return response?.data?.message ?? fallback;
+}
+
 export function useRepls(): UseReplsReturn {
   const [repls,    setRepls]    = useState<Repl[]>([]);
   const [loading,  setLoading]  = useState(true);
@@ -30,8 +35,8 @@ export function useRepls(): UseReplsReturn {
       setError(null);
       const { data } = await api.get<{ repls: Repl[] }>("/api/v1/repl/all");
       setRepls(data.repls);
-    } catch (err: any) {
-      setError(err.response?.data?.message ?? "Failed to load repls");
+    } catch (err: unknown) {
+      setError(getApiErrorMessage(err, "Failed to load repls"));
     } finally {
       setLoading(false);
     }
@@ -88,8 +93,9 @@ export function useRepls(): UseReplsReturn {
         }
       }, 1500);
       setTimeout(() => clearInterval(poll), 30_000); // safety timeout
-    } catch {
+    } catch (err: unknown) {
       fetchRepls();
+      throw new Error(getApiErrorMessage(err, "Failed to start repl"));
     }
   }, [fetchRepls]);
 

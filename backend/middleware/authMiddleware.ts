@@ -2,6 +2,19 @@
 import type { Request, Response, NextFunction } from "express";
 import { verifyToken } from "../lib/token";
 
+function getCookieValue(req: Request, name: string): string | undefined {
+  const cookieHeader = req.headers.cookie;
+  if (!cookieHeader) return undefined;
+
+  for (const part of cookieHeader.split(";")) {
+    const [rawName, ...rest] = part.trim().split("=");
+    if (rawName !== name) continue;
+    return decodeURIComponent(rest.join("="));
+  }
+
+  return undefined;
+}
+
 /**
  * Reads JWT from:
  *  1. HttpOnly cookie  cb_token    (preferred — browser flow)
@@ -10,7 +23,7 @@ import { verifyToken } from "../lib/token";
 export const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
   try {
     // 1. Cookie
-    let token: string | undefined = req.cookies?.cb_token;
+    let token: string | undefined = getCookieValue(req, "cb_token");
 
     // 2. Bearer header
     if (!token) {

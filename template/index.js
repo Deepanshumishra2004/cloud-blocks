@@ -33,13 +33,15 @@ async function uploadDirectory(localDir, s3Prefix) {
     if (entry.isDirectory()) {
       await uploadDirectory(fullPath, key);
     } else {
-      const fileStream = fs.createReadStream(fullPath);
+      const fileBody = fs.readFileSync(fullPath);
+      const { size } = fs.statSync(fullPath);
 
       await s3.send(
         new PutObjectCommand({
           Bucket: BUCKET,
           Key: key,
-          Body: fileStream,
+          Body: fileBody,
+          ContentLength: size,
         })
       );
 

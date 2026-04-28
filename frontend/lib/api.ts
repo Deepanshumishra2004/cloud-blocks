@@ -1,35 +1,12 @@
 import axios, { type AxiosInstance, type InternalAxiosRequestConfig } from "axios";
-import Cookies from "js-cookie";
 import type { AuthUser } from "@/lib/authstore";
 
-const TOKEN_KEY = "cb_token";
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 const API_TIMEOUT_MS = 12_000;
 const AUTH_ROUTE_PREFIX = "/auth";
 const SIGNIN_ROUTE = "/signin";
-const IS_PROD = process.env.NODE_ENV === "production";
 
 const isBrowser = (): boolean => typeof window !== "undefined";
-
-export const tokenStorage = {
-  get(): string | undefined {
-    return isBrowser() ? Cookies.get(TOKEN_KEY) : undefined;
-  },
-  set(token: string): void {
-    if (!isBrowser()) return;
-
-    Cookies.set(TOKEN_KEY, token, {
-      expires: 7,
-      secure: IS_PROD,
-      sameSite: "lax",
-      path: "/",
-    });
-  },
-  clear(): void {
-    if (!isBrowser()) return;
-    Cookies.remove(TOKEN_KEY, { path: "/" });
-  },
-};
 
 export const api: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -38,21 +15,12 @@ export const api: AxiosInstance = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
-api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  if (!isBrowser()) return config;
-
-  const token = tokenStorage.get();
-  if (!token) return config;
-
-  (config.headers as Record<string, string>).Authorization = `Bearer ${token}`;
-  return config;
-});
+api.interceptors.request.use((config: InternalAxiosRequestConfig) => config);
 
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error?.response?.status === 401 && isBrowser()) {
-      tokenStorage.clear();
       const onAuthPage = window.location.pathname.startsWith(AUTH_ROUTE_PREFIX);
       if (!onAuthPage) window.location.replace(SIGNIN_ROUTE);
     }
@@ -88,21 +56,33 @@ const del = async (url: string): Promise<void> => {
   await api.delete(url);
 };
 
-export type ReplType = "NODE" | "REACT" | "NEXT" | "PYTHON" | "BUN";
+export type ReplType = "BUN" | "JAVASCRIPT" | "NODE" | "REACT" | "NEXT";
 export type ReplStatus = "RUNNING" | "STOPPED" | "STARTING" | "ERROR";
 export type PlanName = "FREE" | "PRO" | "TEAMS";
 export type SubStatus = "ACTIVE" | "CANCELED" | "EXPIRED" | "PAST_DUE" | "TRIAL";
 export type BillingCycle = "MONTHLY" | "YEARLY";
+export type AiProvider = "GEMINI" | "OPENAI" | "ANTHROPIC" | "DEEPSEEK";
 
 export interface Repl {
   id: string;
   name: string;
   type: ReplType;
   status: ReplStatus;
+  previewUrl?: string;
+  wsUrl?: string;
+  host?: string;
   userId?: string;
   lastActive?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ReplRuntime {
+  replId: string;
+  status: "RUNNING";
+  previewUrl: string;
+  wsUrl: string;
+  host: string;
 }
 
 export interface Plan {
@@ -137,8 +117,50 @@ export interface Payment {
   createdAt: string;
 }
 
+export interface AiCredential {
+  id: string;
+  provider: AiProvider;
+  name: string;
+  last4: string;
+  maskedKey: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AiGenerateResult {
+  content: string;
+  model: string;
+  provider: AiProvider;
+  credentialName: string;
+}
+
 export async function fetchUser(): Promise<AuthUser | null> {
   return safe(async () => (await getData<{ user: AuthUser }>("/api/v1/user/me")).user, null);
+}
+
+export async function fetchAiCredentials(): Promise<AiCredential[]> {
+  return safe(async () => (await getData<{ credentials: AiCredential[] }>("/api/v1/user/ai-credentials")).credentials, []);
+}
+
+export async function createAiCredential(payload: {
+  provider: AiProvider;
+  name: string;
+  apiKey: string;
+}): Promise<AiCredential> {
+  return (await postData<{ credential: AiCredential }, typeof payload>("/api/v1/user/ai-credentials", payload)).credential;
+}
+
+export async function activateAiCredential(credentialId: string): Promise<void> {
+  await postData("/api/v1/user/ai-credentials/activate", { credentialId });
+}
+
+export async function deleteAiCredential(credentialId: string): Promise<void> {
+  await del(`/api/v1/user/ai-credentials/${credentialId}`);
+}
+
+export async function fetchSessionToken(): Promise<string | null> {
+  return safe(async () => (await getData<{ token: string }>("/api/v1/user/session-token")).token, null);
 }
 
 export async function createCheckoutSession(plan: "PRO" | "TEAMS", billingCycle: BillingCycle): Promise<string> {
@@ -196,13 +218,60 @@ export async function deleteRepl(replId: string): Promise<void> {
   await del(`/api/v1/repl/delete/${replId}`);
 }
 
-export async function startRepl(replId: string): Promise<void> {
-  await postData(`/api/v1/repl/${replId}/start`);
+export async function startRepl(replId: string): Promise<ReplRuntime> {
+  return await postData<ReplRuntime>(`/api/v1/repl/${replId}/start`);
 }
 
 export async function stopRepl(replId: string): Promise<void> {
   await postData(`/api/v1/repl/${replId}/stop`);
 }
 
-export default api;
+export async function generateReplCode(
+  replId: string,
+  payload: { prompt: string; filePath: string; currentContent: string },
+): Promise<AiGenerateResult> {
+  return await postData<AiGenerateResult, typeof payload>(`/api/v1/repl/${replId}/ai/generate`, payload);
+}
 
+export async function streamReplCode(
+  replId: string,
+  payload: { prompt: string; filePath: string; currentContent: string; history?: Array<{ role: "user" | "assistant"; content: string }> },
+  onChunk: (chunk: string) => void,
+): Promise<{ provider: string; credentialName: string }> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/repl/${replId}/ai/stream`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok || !response.body) {
+    const err = await response.json().catch(() => ({})) as { message?: string };
+    throw new Error(err.message ?? "Stream failed");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const json = line.slice(6).trim();
+      const parsed = JSON.parse(json) as { chunk?: string; done?: boolean; provider?: string; credentialName?: string; error?: string };
+      if (parsed.error) throw new Error(parsed.error);
+      if (parsed.chunk) onChunk(parsed.chunk);
+      if (parsed.done) return { provider: parsed.provider ?? "", credentialName: parsed.credentialName ?? "" };
+    }
+  }
+
+  return { provider: "", credentialName: "" };
+}
+
+export default api;

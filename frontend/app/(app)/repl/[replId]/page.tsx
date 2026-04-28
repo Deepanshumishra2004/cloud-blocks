@@ -7,43 +7,46 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import {
+  fetchAiCredentials,
+  fetchSessionToken,
+  streamReplCode,
   fetchReplById,
   startRepl,
   stopRepl,
-  tokenStorage,
+  type AiCredential,
   type Repl,
   type ReplType,
   updateRepl,
 } from "@/lib/api";
-import { EditorSkeleton } from "../../../../components/replEditor/EditorSkeleton";
-import { FileTreeNode } from "../../../../components/replEditor/FileTreeNode";
+import { EditorSkeleton } from "@/components/replEditor/EditorSkeleton";
+import { InlineAiBar } from "@/components/replEditor/InlineAiBar";
+import type { AiMessage } from "@/components/replEditor/InlineAiBar";
+import { FileTreeNode } from "@/components/replEditor/FileTreeNode";
+import { ResizeHandleH, ResizeHandleV } from "@/components/replEditor/ResizeHandle";
+import { Group as PanelGroup, Panel } from "react-resizable-panels";
 import {
   ChevronLeftIcon,
   ExternalLinkIcon,
   FileIcon,
   PlayIcon,
-} from "../../../../components/replEditor/icons";
-import { PanelTab } from "../../../../components/replEditor/PanelTab";
+} from "@/components/replEditor/icons";
+import { PanelTab } from "@/components/replEditor/PanelTab";
 import {
   EXT_LANG,
-  getWsBaseUrl,
   LANG_MAP,
   WEB_TYPES,
-} from "../../../../components/replEditor/_lib/constants";
-import { findEntrypoint } from "../../../../components/replEditor/_lib/fileTree";
+} from "@/components/replEditor/_lib/constants";
+import { findEntrypoint } from "@/components/replEditor/_lib/fileTree";
 import type {
   FileNode,
   ReplStatus,
   WsMsg,
-} from "../../../../components/replEditor/_lib/types";
+} from "@/components/replEditor/_lib/types";
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
   ssr: false,
 });
 
-const SIDEBAR_WIDTH = 200;
-const PREVIEW_WIDTH = 360;
-const TERMINAL_HEIGHT = 220;
 
 type TerminalLike = {
   write: (data: string) => void;
@@ -57,6 +60,26 @@ type TerminalLike = {
 type FitAddonLike = {
   fit: () => void;
 };
+
+type MonacoChange = {
+  rangeOffset: number;
+  rangeLength: number;
+  text: string;
+};
+
+type MonacoEditorLike = {
+  onDidChangeModelContent: (
+    listener: (event: { changes: MonacoChange[] }) => void,
+  ) => { dispose: () => void };
+};
+
+type FilePatchChange = {
+  rangeOffset: number;
+  rangeLength: number;
+  text: string;
+};
+
+const PATCH_BATCH_WINDOW_MS = 75;
 
 export default function ReplEditorPage() {
   const { replId } = useParams<{ replId: string }>();
@@ -76,9 +99,14 @@ export default function ReplEditorPage() {
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [activePanel, setActivePanel] = useState<"preview" | "output">(
-    "output",
-  );
+  const [previewFrameKey, setPreviewFrameKey] = useState(0);
+  const [activePanel, setActivePanel] = useState<"preview" | "output">("output");
+  const [outputLog, setOutputLog] = useState("");
+  const [aiCredentials, setAiCredentials] = useState<AiCredential[]>([]);
+  const [aiMode, setAiMode] = useState<"auto" | "ask">("ask");
+  const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
+  const [generatingAi, setGeneratingAi] = useState(false);
+  const [pendingAiContent, setPendingAiContent] = useState<{ file: string; original: string; content: string } | null>(null);
 
   const [renaming, setRenaming] = useState(false);
   const [renameName, setRenameName] = useState("");
@@ -88,21 +116,82 @@ export default function ReplEditorPage() {
   const xtermRef = useRef<TerminalLike | null>(null);
   const fitAddonRef = useRef<FitAddonLike | null>(null);
   const outputBufferRef = useRef<string[]>([]);
+  const outputLogRef = useRef("");
+  const openFileRef = useRef<string | null>(null);
+  const editorRef = useRef<MonacoEditorLike | null>(null);
+  const editorDisposeRef = useRef<{ dispose: () => void } | null>(null);
+  const ignoreEditorChangesRef = useRef(false);
+  const patchQueueRef = useRef<Map<string, FilePatchChange[]>>(new Map());
+  const patchTimerRef = useRef<number | null>(null);
+  const fileVersionRef = useRef<Map<string, number>>(new Map());
+  const pendingFileRef = useRef<string | null>(null);
+
+  const flushQueuedPatches = useCallback(
+    (path: string) => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+      const queued = patchQueueRef.current.get(path);
+      if (!queued || queued.length === 0) return;
+
+      const nextVersion = (fileVersionRef.current.get(path) ?? 0) + 1;
+
+      wsRef.current.send(
+        JSON.stringify({
+          type: "file:patch",
+          path,
+          version: nextVersion,
+          changes: queued,
+        }),
+      );
+
+      fileVersionRef.current.set(path, nextVersion);
+      patchQueueRef.current.set(path, []);
+    },
+    [],
+  );
+
+  const schedulePatchFlush = useCallback(
+    (path: string) => {
+      if (patchTimerRef.current !== null) {
+        window.clearTimeout(patchTimerRef.current);
+      }
+
+      patchTimerRef.current = window.setTimeout(() => {
+        flushQueuedPatches(path);
+        patchTimerRef.current = null;
+      }, PATCH_BATCH_WINDOW_MS);
+    },
+    [flushQueuedPatches],
+  );
 
   const openFileFromWs = (socket: WebSocket, path: string) => {
-    socket.send(JSON.stringify({ type: "read_file", path }));
+    pendingFileRef.current = path;
+    socket.send(JSON.stringify({ type: "file:read", path }));
   };
 
   const connectWs = useCallback(
-    (activeRepl: Repl) => {
-      const token = tokenStorage.get();
-      const ws = new WebSocket(
-        `${getWsBaseUrl()}/ws/repl/${activeRepl.id}?token=${token}`,
-      );
+    async (activeRepl: Repl, runtimeWsUrl?: string) => {
+      const token = await fetchSessionToken();
+      const baseWsUrl = runtimeWsUrl ?? activeRepl.wsUrl;
+
+      if (!baseWsUrl || !token) {
+        toast.error("Missing runtime session");
+        return;
+      }
+
+      const previousSocket = wsRef.current;
+      if (previousSocket) {
+        previousSocket.onclose = null;
+        previousSocket.onerror = null;
+        previousSocket.close();
+      }
+      const separator = baseWsUrl.includes("?") ? "&" : "?";
+      const ws = new WebSocket(`${baseWsUrl}${separator}token=${encodeURIComponent(token)}`);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: "list_files" }));
+        ws.send(JSON.stringify({ type: "status", status: "RUNNING" }));
+        ws.send(JSON.stringify({ type: "file:list" }));
       };
 
       ws.onmessage = (event) => {
@@ -115,31 +204,65 @@ export default function ReplEditorPage() {
         }
 
         switch (message.type) {
-          case "terminal_output":
+          case "terminal:output":
+            outputLogRef.current = `${outputLogRef.current}${message.data}`.slice(
+              -40_000,
+            );
+            setOutputLog(outputLogRef.current);
             if (xtermRef.current) {
               xtermRef.current.write(message.data);
             } else {
               outputBufferRef.current.push(message.data);
             }
             break;
-          case "file_tree": {
-            setFiles(message.files);
-            const entry = findEntrypoint(message.files);
-            if (entry && !openFile) openFileFromWs(ws, entry);
+          case "terminal:clear":
+            outputLogRef.current = "";
+            outputBufferRef.current = [];
+            setOutputLog("");
+            xtermRef.current?.clear();
+            break;
+          case "file:list": {
+            setFiles(message.tree);
+            const entry = findEntrypoint(message.tree);
+            if (entry && !openFileRef.current) openFileFromWs(ws, entry);
             break;
           }
-          case "file_content":
+          case "file:content":
+            if (
+              pendingFileRef.current &&
+              message.path !== pendingFileRef.current
+            ) {
+              break;
+            }
+
+            pendingFileRef.current = null;
+            fileVersionRef.current.set(message.path, message.version);
+            ignoreEditorChangesRef.current = true;
             setOpenFile(message.path);
             setFileContent(message.content);
             setIsDirty(false);
+            window.setTimeout(() => {
+              ignoreEditorChangesRef.current = false;
+            }, 0);
+            break;
+          case "file:patched":
+            fileVersionRef.current.set(message.path, message.version);
+            if (message.path === openFileRef.current) {
+              const queued = patchQueueRef.current.get(message.path) ?? [];
+              if (queued.length === 0) setIsDirty(false);
+            }
             break;
           case "status":
             setStatus(message.status);
             if (message.status === "RUNNING") setStarting(false);
-            if (message.status === "STOPPED") setStopping(false);
+            if (message.status === "STOPPED") {
+              setStopping(false);
+              setPreviewFrameKey((value) => value + 1);
+            }
             break;
-          case "preview_url":
+          case "preview:url":
             setPreviewUrl(message.url);
+            setPreviewFrameKey((value) => value + 1);
             setActivePanel("preview");
             break;
           case "error":
@@ -149,13 +272,22 @@ export default function ReplEditorPage() {
       };
 
       ws.onclose = () => {
+        wsRef.current = null;
         setStatus("STOPPED");
         setStarting(false);
         setStopping(false);
       };
+
+      ws.onerror = () => {
+        toast.error("Terminal connection failed");
+      };
     },
-    [openFile, toast],
+    [toast],
   );
+
+  useEffect(() => {
+    openFileRef.current = openFile;
+  }, [openFile]);
 
   useEffect(() => {
     fetchReplById(replId)
@@ -163,6 +295,8 @@ export default function ReplEditorPage() {
         setRepl(loadedRepl);
         setStatus(loadedRepl.status as ReplStatus);
         setRenameName(loadedRepl.name);
+        setPreviewUrl(loadedRepl.previewUrl ?? null);
+        setPreviewFrameKey(0);
 
         if (loadedRepl.status === "RUNNING") {
           connectWs(loadedRepl);
@@ -173,6 +307,23 @@ export default function ReplEditorPage() {
 
     return () => wsRef.current?.close();
   }, [replId, connectWs, toast]);
+
+  useEffect(() => {
+    fetchAiCredentials()
+      .then(setAiCredentials)
+      .catch(() => {
+        toast.error("Failed to load AI credentials");
+      });
+  }, [toast]);
+
+  useEffect(() => {
+    return () => {
+      if (patchTimerRef.current !== null) {
+        window.clearTimeout(patchTimerRef.current);
+      }
+      editorDisposeRef.current?.dispose();
+    };
+  }, []);
 
   useEffect(() => {
     if (!termRef.current) return;
@@ -220,7 +371,7 @@ export default function ReplEditorPage() {
       }
 
       terminalInstance.onData((data: string) => {
-        wsRef.current?.send(JSON.stringify({ type: "terminal_input", data }));
+        wsRef.current?.send(JSON.stringify({ type: "terminal:input", data }));
       });
 
       terminal = terminalInstance;
@@ -241,19 +392,12 @@ export default function ReplEditorPage() {
     if (!openFile || !wsRef.current) return;
 
     setSaving(true);
-    wsRef.current.send(
-      JSON.stringify({
-        type: "write_file",
-        path: openFile,
-        content: fileContent,
-      }),
-    );
+    flushQueuedPatches(openFile);
 
     setTimeout(() => {
-      setIsDirty(false);
       setSaving(false);
     }, 300);
-  }, [openFile, fileContent]);
+  }, [flushQueuedPatches, openFile]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -267,12 +411,86 @@ export default function ReplEditorPage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleSave]);
 
+  // Applies AI line-level patch edits to editor (no WS — preview only)
+  const applyAiPatch = useCallback((responseJson: string): { content: string; response: { type: "chat" | "code" | "mixed"; message: string | null; linesChanged: number } } => {
+    type Edit = { startLine: number; endLine: number; newContent: string };
+    type AiResponse = { type: "chat" | "code" | "mixed"; message: string | null; edits: Edit[] | null };
+
+    let parsed: AiResponse;
+    try {
+      // Strip markdown code fences if the model wrapped the JSON
+      const clean = responseJson.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+      parsed = JSON.parse(clean) as AiResponse;
+    } catch {
+      return { content: fileContent, response: { type: "chat", message: responseJson.trim() || "No response", linesChanged: 0 } };
+    }
+
+    const edits = parsed.edits ?? [];
+    const currentLines = fileContent.split("\n");
+    const sorted = [...edits].sort((a, b) => b.startLine - a.startLine);
+    let linesChanged = 0;
+    for (const edit of sorted) {
+      const start = Math.max(0, edit.startLine - 1);
+      const end = Math.min(currentLines.length, edit.endLine);
+      const replacement = edit.newContent === "" ? [] : edit.newContent.split("\n");
+      linesChanged += end - start;
+      currentLines.splice(start, end - start, ...replacement);
+    }
+
+    const next = currentLines.join("\n");
+    if (edits.length > 0) {
+      patchQueueRef.current.set(openFileRef.current ?? "", []);
+      ignoreEditorChangesRef.current = true;
+      setFileContent(next);
+      window.setTimeout(() => { ignoreEditorChangesRef.current = false; }, 0);
+    }
+    return { content: next, response: { type: parsed.type, message: parsed.message ?? null, linesChanged } };
+  }, [fileContent]);
+
+  const applyFileReplacement = useCallback(
+    (path: string, nextContent: string) => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        throw new Error("Start the repl before applying AI changes");
+      }
+
+      patchQueueRef.current.set(path, []);
+      ignoreEditorChangesRef.current = true;
+      setFileContent(nextContent);
+      setIsDirty(false);
+      window.setTimeout(() => {
+        ignoreEditorChangesRef.current = false;
+      }, 0);
+
+      wsRef.current.send(
+        JSON.stringify({
+          type: "file:patch",
+          path,
+          changes: [
+            {
+              rangeOffset: 0,
+              rangeLength: nextContent.length,
+              text: nextContent,
+            },
+          ],
+        }),
+      );
+    },
+    [fileContent],
+  );
+
   const handleFileClick = async (path: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
     if (isDirty) {
       await handleSave();
     }
+
+    ignoreEditorChangesRef.current = true;
+    setOpenFile(path);
+    setFileContent("");
+    window.setTimeout(() => {
+      ignoreEditorChangesRef.current = false;
+    }, 0);
 
     openFileFromWs(wsRef.current, path);
   };
@@ -282,8 +500,31 @@ export default function ReplEditorPage() {
 
     setStarting(true);
     try {
-      await startRepl(repl.id);
-      connectWs(repl);
+      const runtime = await startRepl(repl.id);
+      setPreviewUrl(runtime.previewUrl);
+      setPreviewFrameKey((value) => value + 1);
+      setStatus("RUNNING");
+      setRepl((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "RUNNING",
+              previewUrl: runtime.previewUrl,
+              wsUrl: runtime.wsUrl,
+              host: runtime.host,
+            }
+          : prev,
+      );
+      connectWs(
+        {
+          ...repl,
+          status: "RUNNING",
+          previewUrl: runtime.previewUrl,
+          wsUrl: runtime.wsUrl,
+          host: runtime.host,
+        },
+        runtime.wsUrl,
+      );
     } catch {
       toast.error("Failed to start repl");
       setStarting(false);
@@ -296,6 +537,20 @@ export default function ReplEditorPage() {
     setStopping(true);
     try {
       await stopRepl(repl.id);
+      setStatus("STOPPED");
+      setPreviewUrl(null);
+      setPreviewFrameKey((value) => value + 1);
+      setRepl((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "STOPPED",
+              previewUrl: undefined,
+              wsUrl: undefined,
+              host: undefined,
+            }
+          : prev,
+      );
       wsRef.current?.close();
     } catch {
       toast.error("Failed to stop repl");
@@ -321,6 +576,71 @@ export default function ReplEditorPage() {
     }
   };
 
+  const handleGenerateAi = async (prompt: string) => {
+    if (!repl || !openFile) {
+      toast.error("Open a file first");
+      return;
+    }
+
+    const userMsg: AiMessage = { role: "user", content: prompt };
+    setAiMessages((prev) => [...prev, userMsg]);
+    setGeneratingAi(true);
+
+    const history = aiMessages.map((m) =>
+      m.role === "user"
+        ? { role: "user" as const, content: m.content }
+        : { role: "assistant" as const, content: m.message ?? "" },
+    );
+
+    const originalContent = fileContent;
+    let streamed = "";
+    try {
+      await streamReplCode(
+        repl.id,
+        { prompt, filePath: openFile, currentContent: fileContent, history },
+        (chunk) => { streamed += chunk; },
+      );
+
+      const { content: patchedContent, response } = applyAiPatch(streamed);
+
+      const assistantMsg: AiMessage =
+        response.type === "chat"
+          ? { role: "assistant", type: "chat", message: response.message ?? "" }
+          : response.type === "code"
+            ? { role: "assistant", type: "code", linesChanged: response.linesChanged }
+            : { role: "assistant", type: "mixed", message: response.message ?? "", linesChanged: response.linesChanged };
+
+      setAiMessages((prev) => [...prev, assistantMsg]);
+
+      if (response.type === "chat") {
+        // Pure chat — no file change
+      } else if (aiMode === "auto") {
+        applyFileReplacement(openFile, patchedContent);
+        setPendingAiContent(null);
+      } else {
+        setPendingAiContent({ file: openFile, original: originalContent, content: patchedContent });
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Please try again.";
+      toast.error("AI generation failed", message);
+    } finally {
+      setGeneratingAi(false);
+    }
+  };
+
+  const handleAiAccept = () => {
+    setPendingAiContent(null);
+    toast.success("AI changes accepted");
+  };
+
+  const handleAiReject = () => {
+    if (pendingAiContent) {
+      applyFileReplacement(pendingAiContent.file, pendingAiContent.original);
+    }
+    setPendingAiContent(null);
+    toast.success("AI changes rejected");
+  };
+
   const isWebType = repl ? WEB_TYPES.includes(repl.type as ReplType) : false;
   const editorLanguage = repl
     ? (LANG_MAP[repl.type as ReplType] ?? "plaintext")
@@ -329,6 +649,9 @@ export default function ReplEditorPage() {
   const fileLanguage = EXT_LANG[ext] ?? editorLanguage;
 
   if (loading) return <EditorSkeleton />;
+
+  const activeAiCredential =
+    aiCredentials.find((credential) => credential.isActive) ?? null;
 
   return (
     <div className="flex flex-col h-screen bg-[#0d0d0f] overflow-hidden select-none">
@@ -432,10 +755,10 @@ export default function ReplEditorPage() {
         )}
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      <PanelGroup orientation="horizontal" className="flex flex-1 overflow-hidden">
+        <Panel defaultSize={15} minSize={10} maxSize={30}>
         <aside
-          className="flex flex-col border-r border-white/8 bg-[#0f0f12] overflow-y-auto shrink-0"
-          style={{ width: SIDEBAR_WIDTH }}
+          className="flex flex-col border-r border-white/8 bg-[#0f0f12] overflow-y-auto h-full"
         >
           <div className="px-3 py-2 flex items-center justify-between border-b border-white/6">
             <span className="text-2xs font-semibold text-white/30 uppercase tracking-wider">
@@ -466,158 +789,179 @@ export default function ReplEditorPage() {
             </div>
           )}
         </aside>
-
-        <div className="flex flex-col flex-1 overflow-hidden">
-          {openFile && (
-            <div className="h-8 flex items-center border-b border-white/8 bg-[#111114] shrink-0 px-1 gap-0.5 overflow-x-auto">
-              <div className="flex items-center gap-1.5 px-3 py-1 rounded-t-md bg-[#0d0d0f] border border-white/10 border-b-0 text-xs text-white/80">
-                <FileIcon ext={openFile.split(".").pop() ?? ""} />
-                <span className="font-mono">{openFile.split("/").pop()}</span>
-                {isDirty && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--brand)] ml-0.5" />
+        </Panel>
+        <ResizeHandleH />
+        <Panel defaultSize={55} minSize={30}>
+          <div className="flex flex-col h-full">
+          <PanelGroup orientation="vertical" className="flex-1 min-h-0">
+            <Panel minSize={30}>
+              <div className="flex flex-col h-full overflow-hidden">
+                {openFile && (
+                  <div className="h-8 flex items-center border-b border-white/8 bg-[#111114] shrink-0 px-1 gap-0.5 overflow-x-auto">
+                    <div className="flex items-center gap-1.5 px-3 py-1 rounded-t-md bg-[#0d0d0f] border border-white/10 border-b-0 text-xs text-white/80">
+                      <FileIcon ext={openFile.split(".").pop() ?? ""} />
+                      <span className="font-mono">{openFile.split("/").pop()}</span>
+                      {isDirty && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-[var(--brand)] ml-0.5" />
+                      )}
+                    </div>
+                  </div>
                 )}
-              </div>
-            </div>
-          )}
-
-          <div className="flex-1 overflow-hidden" style={{ minHeight: 0 }}>
-            {openFile ? (
-              <MonacoEditor
-                height="100%"
-                language={fileLanguage}
-                value={fileContent}
-                theme="vs-dark"
-                onChange={(value) => {
-                  setFileContent(value ?? "");
-                  setIsDirty(true);
-                }}
-                options={{
-                  fontSize: 13,
-                  fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                  fontLigatures: true,
-                  lineNumbers: "on",
-                  minimap: { enabled: false },
-                  scrollBeyondLastLine: false,
-                  wordWrap: "on",
-                  tabSize: 2,
-                  automaticLayout: true,
-                  padding: { top: 12 },
-                  smoothScrolling: true,
-                  cursorBlinking: "smooth",
-                  renderLineHighlight: "gutter",
-                  bracketPairColorization: { enabled: true },
-                }}
-              />
-            ) : (
-              <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-6">
-                <p className="text-sm text-white/30">
-                  {status === "RUNNING"
-                    ? "Select a file to start editing"
-                    : "Run your repl to load files"}
-                </p>
-                {status !== "RUNNING" && (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={handleRun}
-                    loading={starting}
-                  >
-                    <PlayIcon /> Run
-                  </Button>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div
-            className="border-t border-white/8 shrink-0 flex flex-col"
-            style={{ height: TERMINAL_HEIGHT }}
-          >
-            <div className="h-7 flex items-center px-3 gap-2 border-b border-white/6 bg-[#0f0f12] shrink-0">
-              <span className="text-2xs font-semibold text-white/30 uppercase tracking-wider">
-                Terminal
-              </span>
-              <div className="flex-1" />
-              <button
-                onClick={() => {
-                  if (xtermRef.current) xtermRef.current.clear();
-                }}
-                className="text-2xs text-white/25 hover:text-white/60 transition-colors"
-              >
-                Clear
-              </button>
-            </div>
-            <div
-              ref={termRef}
-              className="flex-1 overflow-hidden"
-              style={{ padding: "4px 0" }}
-            />
-          </div>
-        </div>
-
-        <div
-          className="flex flex-col border-l border-white/8 bg-[#0f0f12] shrink-0"
-          style={{ width: PREVIEW_WIDTH }}
-        >
-          <div className="h-8 flex items-center border-b border-white/8 px-1 gap-0.5 shrink-0 bg-[#111114]">
-            {isWebType && (
-              <PanelTab
-                active={activePanel === "preview"}
-                onClick={() => setActivePanel("preview")}
-              >
-                Preview
-              </PanelTab>
-            )}
-            <PanelTab
-              active={activePanel === "output"}
-              onClick={() => setActivePanel("output")}
-            >
-              Output
-            </PanelTab>
-            {previewUrl && (
-              <a
-                href={previewUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="ml-auto mr-1 text-2xs text-white/30 hover:text-white/70 transition-colors flex items-center gap-1"
-              >
-                <ExternalLinkIcon /> Open
-              </a>
-            )}
-          </div>
-
-          {activePanel === "preview" && isWebType && (
-            <div className="flex-1 relative overflow-hidden">
-              {previewUrl ? (
-                <iframe
-                  src={previewUrl}
-                  className="w-full h-full border-none"
-                  title="Repl preview"
-                  sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
-                />
-              ) : (
-                <div className="flex flex-col items-center justify-center h-full gap-2 text-center px-4">
-                  <p className="text-xs text-white/30">
-                    {status === "RUNNING"
-                      ? "Waiting for server to start..."
-                      : "Run your repl to see preview"}
-                  </p>
+                <div className="flex-1 overflow-hidden" style={{ minHeight: 0 }}>
+                  {openFile ? (
+                    <MonacoEditor
+                      height="100%"
+                      language={fileLanguage}
+                      value={fileContent}
+                      theme="vs-dark"
+                      onMount={(editor) => {
+                        editorRef.current = editor as unknown as MonacoEditorLike;
+                        editorDisposeRef.current?.dispose();
+                        editorDisposeRef.current =
+                          editorRef.current.onDidChangeModelContent((event) => {
+                            const activePath = openFileRef.current;
+                            if (ignoreEditorChangesRef.current || !activePath || event.changes.length === 0) return;
+                            const queued = patchQueueRef.current.get(activePath) ?? [];
+                            queued.push(...event.changes.map((change) => ({
+                              rangeOffset: change.rangeOffset,
+                              rangeLength: change.rangeLength,
+                              text: change.text,
+                            })));
+                            patchQueueRef.current.set(activePath, queued);
+                            setIsDirty(true);
+                            schedulePatchFlush(activePath);
+                          });
+                      }}
+                      onChange={(value) => setFileContent(value ?? "")}
+                      options={{
+                        fontSize: 13,
+                        fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                        fontLigatures: true,
+                        lineNumbers: "on",
+                        minimap: { enabled: false },
+                        scrollBeyondLastLine: false,
+                        wordWrap: "on",
+                        tabSize: 2,
+                        automaticLayout: true,
+                        padding: { top: 12 },
+                        smoothScrolling: true,
+                        cursorBlinking: "smooth",
+                        renderLineHighlight: "gutter",
+                        bracketPairColorization: { enabled: true },
+                      }}
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-6">
+                      <p className="text-sm text-white/30">
+                        {status === "RUNNING" ? "Select a file to start editing" : "Run your repl to load files"}
+                      </p>
+                      {status !== "RUNNING" && (
+                        <Button variant="primary" size="sm" onClick={handleRun} loading={starting}>
+                          <PlayIcon /> Run
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 </div>
+              </div>
+            </Panel>
+            <ResizeHandleV />
+            <Panel defaultSize={25} minSize={10}>
+              <div className="flex flex-col h-full border-t border-white/8">
+                <div className="h-7 flex items-center px-3 gap-2 border-b border-white/6 bg-[#0f0f12] shrink-0">
+                  <span className="text-2xs font-semibold text-white/30 uppercase tracking-wider">Terminal</span>
+                  <div className="flex-1" />
+                  <button
+                    onClick={() => {
+                      if (xtermRef.current) xtermRef.current.clear();
+                      outputLogRef.current = "";
+                      setOutputLog("");
+                      wsRef.current?.send(JSON.stringify({ type: "terminal:clear" }));
+                    }}
+                    className="text-2xs text-white/25 hover:text-white/60 transition-colors"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <div ref={termRef} className="flex-1 overflow-hidden" style={{ padding: "4px 0" }} />
+              </div>
+            </Panel>
+          </PanelGroup>
+          <InlineAiBar
+            openFile={openFile}
+            activeCredential={activeAiCredential}
+            mode={aiMode}
+            messages={aiMessages}
+            generating={generatingAi}
+            hasPending={!!pendingAiContent}
+            onModeChange={setAiMode}
+            onSend={handleGenerateAi}
+            onAccept={handleAiAccept}
+            onReject={handleAiReject}
+            onOpenSettings={() => router.push("/dashboard/settings")}
+          />
+          </div>
+        </Panel>
+        <ResizeHandleH />
+        <Panel defaultSize={30} minSize={20} maxSize={50}>
+          <div className="flex flex-col border-l border-white/8 bg-[#0f0f12] h-full">
+            <div className="h-8 flex items-center border-b border-white/8 px-1 gap-0.5 shrink-0 bg-[#111114]">
+              {isWebType && (
+                <PanelTab active={activePanel === "preview"} onClick={() => setActivePanel("preview")}>
+                  Preview
+                </PanelTab>
+              )}
+              <PanelTab active={activePanel === "output"} onClick={() => setActivePanel("output")}>
+                Output
+              </PanelTab>
+              {previewUrl && (
+                <a
+                  href={previewUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ml-auto mr-1 text-2xs text-white/30 hover:text-white/70 transition-colors flex items-center gap-1"
+                >
+                  <ExternalLinkIcon /> Open
+                </a>
               )}
             </div>
-          )}
 
-          {activePanel === "output" && (
-            <div className="flex-1 overflow-y-auto p-3">
-              <p className="text-2xs text-white/20 font-mono">
-                {status === "RUNNING"
-                  ? "Process output appears in the terminal below."
-                  : "Start the repl to see output."}
-              </p>
-            </div>
-          )}
-        </div>
-      </div>
+            {activePanel === "preview" && isWebType && (
+              <div className="flex-1 relative overflow-hidden">
+                {previewUrl ? (
+                  <iframe
+                    key={`${previewUrl}-${previewFrameKey}`}
+                    src={previewUrl}
+                    className="w-full h-full border-none"
+                    title="Repl preview"
+                    sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-full gap-2 text-center px-4">
+                    <p className="text-xs text-white/30">
+                      {status === "RUNNING" ? "Waiting for server to start..." : "Run your repl to see preview"}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activePanel === "output" && (
+              <div className="flex-1 overflow-y-auto p-3">
+                {outputLog ? (
+                  <pre className="text-2xs text-white/65 font-mono whitespace-pre-wrap break-words">{outputLog}</pre>
+                ) : (
+                  <p className="text-2xs text-white/20 font-mono">
+                    {status === "RUNNING" ? "Waiting for runtime logs..." : "Start the repl to see output."}
+                  </p>
+                )}
+              </div>
+            )}
+
+          </div>
+        </Panel>
+      </PanelGroup>
     </div>
   );
 }

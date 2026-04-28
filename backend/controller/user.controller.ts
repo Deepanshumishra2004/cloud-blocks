@@ -1,5 +1,5 @@
 // src/controllers/user.controller.ts
-import type { Request, Response } from "express";
+import type { CookieOptions, Request, Response } from "express";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 import { prisma }                             from "../lib/prisma";
@@ -33,14 +33,25 @@ async function deriveUniqueUsername(base: string): Promise<string> {
   return `${slug}${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function sendTokenCookie(res: Response, token: string) {
-  res.cookie("cb_token", token, {
+function buildAuthCookieOptions(): CookieOptions {
+  const cookieDomain = process.env.AUTH_COOKIE_DOMAIN;
+
+  return {
     httpOnly: true,
-    secure:   process.env.NODE_ENV === "production",
+    secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    maxAge:   7 * 24 * 60 * 60 * 1000,
-    path:     "/",
-  });
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    path: "/",
+    ...(cookieDomain ? { domain: cookieDomain } : {}),
+  };
+}
+
+function sendTokenCookie(res: Response, token: string) {
+  res.cookie("cb_token", token, buildAuthCookieOptions());
+}
+
+function clearTokenCookie(res: Response) {
+  res.clearCookie("cb_token", buildAuthCookieOptions());
 }
 
 async function ensureFreeSubscriptionForUser(db: any, userId: string): Promise<void> {
@@ -118,7 +129,7 @@ export const signup = async (req: Request, res: Response) => {
 
     const token = signToken(user.id);
     sendTokenCookie(res, token);
-    return res.status(201).json({ message: "Account created", token, user });
+    return res.status(201).json({ message: "Account created", user });
   } catch (err) {
     console.error("[signup]", err);
     return res.status(500).json({ message: "Signup failed" });
@@ -166,7 +177,6 @@ export const signin = async (req: Request, res: Response) => {
 
     return res.status(200).json({
       message: "Signed in",
-      token,
       user: { id: user.id,
         email: user.email, 
         username: user.username, 
@@ -186,8 +196,13 @@ export const signin = async (req: Request, res: Response) => {
 ───────────────────────────────────────────────────────────── */
 
 export const signout = (_req: Request, res: Response) => {
-  res.clearCookie("cb_token", { path: "/" });
+  clearTokenCookie(res);
   return res.status(200).json({ message: "Signed out" });
+};
+
+export const sessionToken = (req: Request, res: Response) => {
+  const token = signToken((req as any).userId);
+  return res.json({ token });
 };
 
 /* ─────────────────────────────────────────────────────────────
@@ -256,7 +271,7 @@ export const deleteMe = async (req: Request, res: Response) => {
     // Cascade deletes: repls, payments (via schema onDelete: Cascade)
     // Subscription is also Cascade via User relation
     await prisma.user.delete({ where: { id: (req as any).userId } });
-    res.clearCookie("cb_token", { path: "/" });
+    clearTokenCookie(res);
     return res.status(200).json({ message: "Account deleted" });
   } catch (err) {
     console.error("[deleteMe]", err);
@@ -330,7 +345,7 @@ export const googleCallback = async (req: Request, res: Response) => {
   const { code, error, state } = req.query as Record<string, string>;
   const fe = process.env.FRONTEND_URL ?? "http://localhost:3000";
 
-  if (error || !code) return res.redirect(`${fe}/auth/callback?error=oauth_denied`);
+  if (error || !code) return res.redirect(`${fe}/callback?error=oauth_denied`);
 
   if (!await consumeOAuthState(state)) {
     console.warn("[googleCallback] Invalid or expired state");
@@ -377,7 +392,7 @@ export const googleCallback = async (req: Request, res: Response) => {
 
     const token = signToken(user.id);
     sendTokenCookie(res, token);
-    return res.redirect(`${fe}/callback?token=${token}`);
+    return res.redirect(`${fe}/callback`);
   } catch (err) {
     console.error("[googleCallback]", err);
     return res.redirect(`${fe}/callback?error=oauth_failed`);
@@ -395,7 +410,7 @@ export const githubInit = async (_req: Request, res: Response) => {
 
 export const githubCallback = async (req: Request, res: Response) => {
   const { code, error, state } = req.query as Record<string, string>;
-  const fe = process.env.FRONTEND_URL ?? "http://localhost:3001";
+  const fe = process.env.FRONTEND_URL ?? "http://localhost:3000";
 
   if (error || !code) return res.redirect(`${fe}/callback?error=oauth_denied`);
 
@@ -436,7 +451,7 @@ export const githubCallback = async (req: Request, res: Response) => {
 
     const token = signToken(user.id);
     sendTokenCookie(res, token);
-    return res.redirect(`${fe}/callback?token=${token}`);
+    return res.redirect(`${fe}/callback`);
   } catch (err) {
     console.error("[githubCallback]", err);
     return res.redirect(`${fe}/callback?error=oauth_failed`);

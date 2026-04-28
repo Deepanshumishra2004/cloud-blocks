@@ -11,6 +11,7 @@ import { AuthHeader }        from "@/components/auth/AuthHeader";
 import { AuthDivider }       from "@/components/auth/AuthDivider";
 import { OAuthButtons }      from "@/components/auth/OAuthButtons";
 import { useAuthStore }      from "@/lib/authstore";
+import { isAxiosError }      from "axios";
 import api                   from "@/lib/api";
 
 interface FormState {
@@ -27,7 +28,7 @@ interface FieldErrors {
 
 export default function SignUpPage() {
   const router  = useRouter();
-  const setAuth = useAuthStore((s: { setAuth: any; }) => s.setAuth);
+  const setAuth = useAuthStore((state) => state.setAuth);
 
   const [form,        setForm]        = useState<FormState>({ email: "", username: "", password: "" });
   const [showPw,      setShowPw]      = useState(false);
@@ -67,10 +68,12 @@ export default function SignUpPage() {
     setLoading(true);
     try {
       const { data } = await api.post("/api/v1/user/signup", form);
-      setAuth(data.user, data.token);
+      setAuth(data.user, null);
       router.push("/dashboard");
-    } catch (err: any) {
-      const msg = err.response?.data?.message ?? "Sign up failed. Please try again.";
+    } catch (err: unknown) {
+      const msg = isAxiosError(err)
+        ? err.response?.data?.message ?? "Sign up failed. Please try again."
+        : "Sign up failed. Please try again.";
       // Map backend field errors
       if (msg.includes("Email")) setFieldErrors((fe) => ({ ...fe, email: msg }));
       else if (msg.includes("Username")) setFieldErrors((fe) => ({ ...fe, username: msg }));

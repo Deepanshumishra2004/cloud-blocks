@@ -2,9 +2,11 @@ import type { ReplType } from "@/lib/api";
 import type { LanguageMap } from "./types";
 
 export const LANG_MAP: LanguageMap = {
+  JAVASCRIPT: "javascript",
   NODE: "typescript",
   REACT: "typescriptreact",
   NEXT: "typescriptreact",
+  BUN: "typescript",
 };
 
 export const WEB_TYPES: ReplType[] = ["REACT", "NEXT"];

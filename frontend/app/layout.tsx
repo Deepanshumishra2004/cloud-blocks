@@ -1,6 +1,7 @@
 // /app/layout.tsx
 import type { Metadata } from "next";
 import { IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
+import { AuthProvider } from "@/components/auth/AuthProvider";
 import { ThemeProvider } from "@/components/layout/ThemeProvider";
 import { ToastProvider } from "@/components/ui/Toast";
 import "@/app/globals.css";
@@ -50,7 +51,9 @@ export default function RootLayout({
         className={`${ibmPlexSans.variable} ${ibmPlexMono.variable} font-sans antialiased`}
       >
         <ThemeProvider defaultTheme="dark">
-          <ToastProvider>{children}</ToastProvider>
+          <AuthProvider>
+            <ToastProvider>{children}</ToastProvider>
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>

@@ -15,6 +15,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.995.0",
     "@types/ws": "^8.18.1",
+    "axios": "^1.15.2",
     "redis": "^5.11.0",
     "ws": "^8.19.0"
   }

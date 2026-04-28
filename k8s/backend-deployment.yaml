@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: repls
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      serviceAccountName: repl-manager-sa
+      containers:
+        - name: backend
+          image: deepanshumishra2004/backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3001
+          envFrom:
+            - secretRef:
+                name: backend-secrets
+          env:
+            - name: PORT
+              value: "3001"

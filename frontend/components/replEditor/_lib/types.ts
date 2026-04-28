@@ -10,11 +10,13 @@ export interface FileNode {
 export type ReplStatus = "RUNNING" | "STOPPED";
 
 export type WsMsg =
-  | { type: "terminal_output"; data: string }
-  | { type: "file_tree"; files: FileNode[] }
-  | { type: "file_content"; path: string; content: string }
+  | { type: "terminal:output"; data: string }
+  | { type: "terminal:clear" }
+  | { type: "file:list"; tree: FileNode[] }
+  | { type: "file:content"; path: string; content: string; version: number }
+  | { type: "file:patched"; path: string; version: number }
   | { type: "status"; status: ReplStatus }
-  | { type: "preview_url"; url: string }
+  | { type: "preview:url"; url: string }
   | { type: "error"; message: string };
 
 export type LanguageMap = Record<ReplType, string>;

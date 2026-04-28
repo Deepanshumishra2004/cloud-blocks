@@ -139,8 +139,15 @@ function ReplsPageInner() {
               isLast={index === filteredRepls.length - 1}
               onOpen={() => router.push(`/repl/${repl.id}`)}
               onStart={() => {
-                void startRepl(repl.id);
-                toast.info("Starting", `${repl.name} is warming up.`);
+                void (async () => {
+                  try {
+                    await startRepl(repl.id);
+                    toast.info("Starting", `${repl.name} is warming up.`);
+                  } catch (error: unknown) {
+                    const message = error instanceof Error ? error.message : "Please try again.";
+                    toast.error("Failed to start", message);
+                  }
+                })();
               }}
               onStop={() => {
                 void stopRepl(repl.id);

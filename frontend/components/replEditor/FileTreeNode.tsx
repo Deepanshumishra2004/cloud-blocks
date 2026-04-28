@@ -5,7 +5,7 @@ import {
   ChevronRightIcon,
   FileIcon,
   FolderIcon,
-} from "../../app/(app)/repl/[replId]/_components/icons";
+} from "./icons";
 
 export function FileTreeNode({
   node,

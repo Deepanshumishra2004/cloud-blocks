@@ -6,7 +6,7 @@
 // Wrap your app in <BillingProvider> inside DashboardLayout.
 
 import {
-  createContext, useContext, useEffect, useState, useCallback,
+  createContext, createElement, useContext, useEffect, useMemo, useState, useCallback,
   type ReactNode,
 } from "react";
 import {
@@ -72,13 +72,21 @@ export function BillingProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  return (
-    <BillingContext.Provider
-      value={{ subscription, usage, loading, upgrading, canceling, refetch: load, upgrade, cancel }}
-    >
-      {children}
-    </BillingContext.Provider>
+  const value = useMemo(
+    () => ({
+      subscription,
+      usage,
+      loading,
+      upgrading,
+      canceling,
+      refetch: load,
+      upgrade,
+      cancel,
+    }),
+    [subscription, usage, loading, upgrading, canceling, load],
   );
+
+  return createElement(BillingContext.Provider, { value }, children);
 }
 
 export function useBilling(): BillingState {

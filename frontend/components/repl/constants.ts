@@ -7,6 +7,8 @@ export interface ReplRuntime {
 }
 
 export const REPL_RUNTIMES: ReplRuntime[] = [
+  { type: "BUN", label: "Bun", description: "Bun runtime starter" },
+  { type: "JAVASCRIPT", label: "JavaScript", description: "Plain JavaScript starter" },
   { type: "NODE", label: "Node.js", description: "Express, Fastify, REST APIs" },
   { type: "REACT", label: "React", description: "Vite + React frontend" },
   { type: "NEXT", label: "Next.js", description: "Full-stack React framework" },

@@ -1,20 +1,4 @@
-apiVerion: v1
-kind: Namespace
-metadata:
-  name: app
-  labels:
-    name: app
----
-apiVerion: v1
+apiVersion: v1
 kind: Namespace
 metadata:
   name: repls
-  labels:
-    name: repls
----
-apiVerion: v1
-kind: Namespace
-metadata:
-  name: data
-  labels:
-    name: data

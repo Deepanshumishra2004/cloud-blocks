@@ -2,9 +2,10 @@ import type { ReactNode } from "react";
 import { Avatar } from "@/components/ui/Misc";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { FormField, Input } from "@/components/ui/Input";
+import { FormField, Input, Select } from "@/components/ui/Input";
 import { Modal, ModalBody, ModalFooter } from "@/components/ui/Modal";
 import type { AuthUser } from "@/lib/authstore";
+import type { AiCredential, AiProvider } from "@/lib/api";
 import { AtIcon, EyeIcon, EyeOffIcon, LockIcon, MailIcon, ProviderIcon } from "./icons";
 
 export function SettingsCard({ title, description, children }: { title: string; description: string; children: ReactNode }) {
@@ -183,6 +184,185 @@ export function AuthProviderSection({ provider }: { provider: AuthUser["provider
         <div>
           <p className="text-sm font-medium text-cb-primary">Signed in with {providerLabel}</p>
           <p className="text-2xs text-cb-muted mt-0.5">Password login is disabled for OAuth accounts.</p>
+        </div>
+      </div>
+    </SettingsCard>
+  );
+}
+
+const PROVIDER_LABELS: Record<AiProvider, string> = {
+  GEMINI: "Gemini",
+  OPENAI: "OpenAI",
+  ANTHROPIC: "Anthropic",
+  DEEPSEEK: "DeepSeek",
+};
+
+export function AiCredentialsSection({
+  credentials,
+  form,
+  saving,
+  pendingCurrentId,
+  confirmingCurrent,
+  deletingCredentialId,
+  onFormChange,
+  onSave,
+  onPickCurrent,
+  onConfirmCurrent,
+  onDelete,
+}: {
+  credentials: AiCredential[];
+  form: { provider: AiProvider; name: string; apiKey: string };
+  saving: boolean;
+  pendingCurrentId: string | null;
+  confirmingCurrent: boolean;
+  deletingCredentialId: string | null;
+  onFormChange: (field: "provider" | "name" | "apiKey", value: string) => void;
+  onSave: () => void;
+  onPickCurrent: (credentialId: string) => void;
+  onConfirmCurrent: () => void;
+  onDelete: (credentialId: string) => void;
+}) {
+  const activeCredential = credentials.find((credential) => credential.isActive) ?? null;
+  const stagedCredential = credentials.find((credential) => credential.id === pendingCurrentId) ?? activeCredential;
+  const canConfirm =
+    Boolean(stagedCredential) && stagedCredential?.id !== activeCredential?.id;
+
+  return (
+    <SettingsCard
+      title="AI Credentials"
+      description="Save provider keys securely, choose the current key, and use it from the REPL editor."
+    >
+      <div className="flex flex-col gap-6">
+        <div className="grid gap-4 md:grid-cols-3">
+          <FormField label="Provider">
+            <Select
+              value={form.provider}
+              onChange={(event) => onFormChange("provider", event.target.value)}
+            >
+              <option value="GEMINI">Gemini</option>
+              <option value="OPENAI" disabled>OpenAI (coming soon)</option>
+              <option value="ANTHROPIC" disabled>Anthropic (coming soon)</option>
+              <option value="DEEPSEEK" disabled>DeepSeek (coming soon)</option>
+            </Select>
+          </FormField>
+
+          <FormField label="Key name">
+            <Input
+              value={form.name}
+              onChange={(event) => onFormChange("name", event.target.value)}
+              placeholder="My Gemini key"
+            />
+          </FormField>
+
+          <FormField label="API key">
+            <Input
+              type="password"
+              value={form.apiKey}
+              onChange={(event) => onFormChange("apiKey", event.target.value)}
+              placeholder="Paste your API key"
+            />
+          </FormField>
+        </div>
+
+        <div className="flex justify-end">
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={onSave}
+            loading={saving}
+            disabled={!form.name.trim() || !form.apiKey.trim()}
+          >
+            Save credential
+          </Button>
+        </div>
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-medium text-cb-secondary">Saved credentials</p>
+            {stagedCredential && (
+              <p className="text-2xs text-cb-muted">
+                Pending current: {stagedCredential.name}
+              </p>
+            )}
+          </div>
+
+          {credentials.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-cb px-4 py-6 text-center text-xs text-cb-muted">
+              No AI credentials saved yet.
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {credentials.map((credential) => {
+                const isPending = pendingCurrentId === credential.id;
+                const isCurrent = credential.isActive;
+
+                return (
+                  <div
+                    key={credential.id}
+                    className="rounded-lg border border-cb bg-[var(--cb-bg-elevated)] px-4 py-3"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium text-cb-primary">{credential.name}</p>
+                          <Badge variant={isCurrent ? "success" : "default"} className="text-2xs">
+                            {isCurrent ? "Current" : PROVIDER_LABELS[credential.provider]}
+                          </Badge>
+                          {isPending && !isCurrent && (
+                            <Badge variant="default" className="text-2xs">
+                              Pending
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-xs text-cb-muted">
+                          {PROVIDER_LABELS[credential.provider]} · {credential.maskedKey}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onPickCurrent(credential.id)}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full border transition-colors ${
+                            isPending || isCurrent
+                              ? "border-brand bg-brand/80"
+                              : "border-cb bg-[var(--cb-bg-surface)]"
+                          }`}
+                          aria-label={`Set ${credential.name} as current`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              isPending || isCurrent ? "translate-x-6" : "translate-x-1"
+                            }`}
+                          />
+                        </button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onDelete(credential.id)}
+                          loading={deletingCredentialId === credential.id}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end">
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={onConfirmCurrent}
+            loading={confirmingCurrent}
+            disabled={!canConfirm}
+          >
+            Confirm current key
+          </Button>
         </div>
       </div>
     </SettingsCard>

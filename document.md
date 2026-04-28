@@ -407,7 +407,7 @@ Client → POST /api/v1/user/signin → Zod validation → bcrypt compare → JW
 4. Service creates K8s Pod + Service in "repls" namespace
 5. Pod boots → main.sh restores S3 snapshot → starts WS agent
 6. Pod URL cached in Redis (1hr TTL)
-7. Client connects via WebSocket: wss://repl-<id>.xyz.com/ws?token=<jwt>
+7. Client connects via WebSocket: ws://repl-<id>.xyz.com/ws?token=<jwt>
 ```
 
 ### Payment & Subscription Flow

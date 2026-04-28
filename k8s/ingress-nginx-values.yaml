@@ -1,0 +1,25 @@
+controller:
+  replicaCount: 2
+  allowSnippetAnnotations: false
+  ingressClassResource:
+    name: nginx
+    enabled: true
+    default: true
+  ingressClass: nginx
+  watchIngressWithoutClass: false
+  admissionWebhooks:
+    enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    type: LoadBalancer
+    externalTrafficPolicy: Local
+  config:
+    proxy-read-timeout: "3600"
+    proxy-send-timeout: "3600"
+    use-forwarded-headers: "true"

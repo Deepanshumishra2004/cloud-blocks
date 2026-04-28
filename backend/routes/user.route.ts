@@ -1,27 +1,46 @@
 // src/routes/user.routes.ts
 import { Router } from "express";
 import {
-  signup, signin, signout, me,
-  updateMe, deleteMe, changePassword,   // ← ADD these 3 imports
-  googleInit, googleCallback,
-  githubInit, githubCallback,
+  changePassword,
+  deleteMe,
+  githubCallback,
+  githubInit,
+  googleCallback,
+  googleInit,
+  me,
+  sessionToken,
+  signin,
+  signout,
+  signup,
+  updateMe,
 } from "../controller/user.controller";
 import { authMiddleware } from "../middleware/authMiddleware";
-import { SIGNUP, SIGNIN } from "../config/config";
+import { SIGNIN, SIGNUP } from "../config/config";
+import {
+  activateAiCredential as activateAiCredentialHandler,
+  createAiCredential as createAiCredentialHandler,
+  deleteAiCredential as deleteAiCredentialHandler,
+  listAiCredentials as listAiCredentialsHandler,
+} from "../controller/ai.controller";
 
 const userRoutes = Router();
 
-userRoutes.post(SIGNUP,      signup);
-userRoutes.post(SIGNIN,      signin);
-userRoutes.post("/signout",  signout);
-userRoutes.get( "/me",       authMiddleware, me);
-userRoutes.patch("/me",      authMiddleware, updateMe);         // ← profile update
-userRoutes.delete("/me",     authMiddleware, deleteMe);         // ← account delete
-userRoutes.post("/change-password", authMiddleware, changePassword); // ← password
+userRoutes.post(SIGNUP, signup);
+userRoutes.post(SIGNIN, signin);
+userRoutes.post("/signout", signout);
+userRoutes.get("/me", authMiddleware, me);
+userRoutes.get("/session-token", authMiddleware, sessionToken);
+userRoutes.patch("/me", authMiddleware, updateMe);
+userRoutes.delete("/me", authMiddleware, deleteMe);
+userRoutes.post("/change-password", authMiddleware, changePassword);
+userRoutes.get("/ai-credentials", authMiddleware, listAiCredentialsHandler);
+userRoutes.post("/ai-credentials", authMiddleware, createAiCredentialHandler);
+userRoutes.post("/ai-credentials/activate", authMiddleware, activateAiCredentialHandler);
+userRoutes.delete("/ai-credentials/:credentialId", authMiddleware, deleteAiCredentialHandler);
 
-userRoutes.get("/google",          googleInit);
+userRoutes.get("/google", googleInit);
 userRoutes.get("/google/callback", googleCallback);
-userRoutes.get("/github",          githubInit);
+userRoutes.get("/github", githubInit);
 userRoutes.get("/github/callback", githubCallback);
 
 export default userRoutes;

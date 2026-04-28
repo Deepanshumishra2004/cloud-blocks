@@ -28,6 +28,8 @@ enum BillingCycle {
 }
 
 enum ReplType {
+  BUN
+  JAVASCRIPT
   NODE
   REACT
   NEXT
@@ -42,6 +44,13 @@ enum Provider {
   EMAIL
   GOOGLE
   GITHUB
+}
+
+enum AiProvider {
+  GEMINI
+  OPENAI
+  ANTHROPIC
+  DEEPSEEK
 }
 
 enum PlanName {
@@ -61,12 +70,50 @@ model User {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  repls        Repl[]
-  subscription Subscription?
-  payments     Payment[]
+  repls         Repl[]
+  subscription  Subscription?
+  payments      Payment[]
+  aiCredentials AiCredential[]
+  aiUsage       AiUsage[]
 
   @@index([provider, providerId])
   @@map("users")
+}
+
+model AiCredential {
+  id           String     @id @default(uuid())
+  userId       String
+  provider     AiProvider
+  name         String
+  encryptedKey String
+  last4        String
+  isActive     Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usageLogs    AiUsage[]
+
+  @@unique([userId, provider, name])
+  @@index([userId, isActive])
+  @@map("ai_credentials")
+}
+
+model AiUsage {
+  id               String     @id @default(uuid())
+  userId           String
+  credentialId     String
+  provider         AiProvider
+  promptTokens     Int        @default(0)
+  completionTokens Int        @default(0)
+  totalTokens      Int        @default(0)
+  createdAt        DateTime   @default(now())
+
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  credential       AiCredential  @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("ai_usage")
 }
 
 model Repl {

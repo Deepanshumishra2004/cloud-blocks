@@ -1,4 +1,3 @@
-// src/store/authStore.ts
 import { create } from "zustand";
 
 export interface AuthUser {
@@ -10,44 +9,40 @@ export interface AuthUser {
 }
 
 interface AuthStore {
-  user:       AuthUser | null;
-  token:      string | null;
-  // isHydrated: prevents the app from showing a loading flash or
-  // running a redirect before we've checked the cookie on mount.
-  // Must be true before any protected route renders.
-  isHydrated: boolean;
-
+  user:        AuthUser | null;
+  token:       string | null;
+  isHydrated:  boolean;
   setAuth:  (user: AuthUser, token: string | null) => void;
   logout:   () => void;
   hydrate:  (fetchUser: () => Promise<AuthUser | null>) => Promise<void>;
 }
 
-export const useAuthStore = create<AuthStore>((set) => ({
+// Module-level singleton: if multiple hook instances call hydrate() at the
+// same time (AuthProvider + layout + page all mount simultaneously), they all
+// await the same in-flight network request instead of firing N copies.
+let _hydrating: Promise<void> | null = null;
+
+export const useAuthStore = create<AuthStore>((set, get) => ({
   user:       null,
   token:      null,
   isHydrated: false,
 
-  // Called after successful email/password login OR OAuth callback
-  setAuth: (user, token) => {
-    set({ user, token });
-  },
+  setAuth: (user, token) => set({ user, token, isHydrated: true }),
 
-  // Called on sign-out — also sets isHydrated: true so the app
-  // doesn't try to re-hydrate after an intentional logout
-  logout: () => {
-    set({ user: null, token: null, isHydrated: true });
-  },
+  logout: () => set({ user: null, token: null, isHydrated: true }),
 
-  // Called ONCE on app mount by AuthProvider.
-  // Fetches /me using the backend cookie and populates the store.
-  // On invalid/expired auth → clears store silently.
-  hydrate: async (fetchUser) => {
-    const user = await fetchUser();
+  hydrate: (fetchUser) => {
+    // Already done — no-op.
+    if (get().isHydrated) return Promise.resolve();
 
-    if (user) {
-      set({ user, token: null, isHydrated: true });
-    } else {
-      set({ user: null, token: null, isHydrated: true });
-    }
+    // In flight — reuse the existing promise so we never fire two /me requests.
+    if (_hydrating) return _hydrating;
+
+    _hydrating = fetchUser()
+      .then((user) => set({ user: user ?? null, token: null, isHydrated: true }))
+      .catch(() => set({ user: null, token: null, isHydrated: true }))
+      .finally(() => { _hydrating = null; });
+
+    return _hydrating;
   },
 }));

@@ -3,3 +3,5 @@
 .env.secrets
 .bun-tmp/
 node_modules/
+k8s/backend-secret.yaml
+k8s/repl-runtime-secret.yaml

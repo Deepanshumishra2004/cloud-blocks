@@ -1,4 +1,4 @@
-import type { Request, Response } from "express";
+﻿import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { logger } from "../lib/logger";
 import {
@@ -50,7 +50,7 @@ export const listAiCredentials = async (req: Request, res: Response) => {
       })),
     });
   } catch (error) {
-    logger.error("[listAiCredentials]", error);
+    logger.error({ err: error }, "[listAiCredentials]");
     return res.status(500).json({ message: "Failed to fetch AI credentials" });
   }
 };
@@ -61,7 +61,7 @@ export const createAiCredential = async (req: Request, res: Response) => {
     if (!parsed.success) {
       return res.status(400).json({
         message: "Validation failed",
-        errors: parsed.error.flatten().fieldErrors,
+        errors: parsed.error.flatten((i) => i.message).fieldErrors,
       });
     }
 
@@ -100,7 +100,7 @@ export const createAiCredential = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    logger.error("[createAiCredential]", error);
+    logger.error({ err: error }, "[createAiCredential]");
     return res.status(500).json({
       message: error instanceof Error ? error.message : "Failed to save AI credential",
     });
@@ -113,7 +113,7 @@ export const activateAiCredential = async (req: Request, res: Response) => {
     if (!parsed.success) {
       return res.status(400).json({
         message: "Validation failed",
-        errors: parsed.error.flatten().fieldErrors,
+        errors: parsed.error.flatten((i) => i.message).fieldErrors,
       });
     }
 
@@ -140,7 +140,7 @@ export const activateAiCredential = async (req: Request, res: Response) => {
 
     return res.status(200).json({ message: "Active AI credential updated" });
   } catch (error) {
-    logger.error("[activateAiCredential]", error);
+    logger.error({ err: error }, "[activateAiCredential]");
     return res.status(500).json({ message: "Failed to update active AI credential" });
   }
 };
@@ -165,7 +165,7 @@ export const deleteAiCredential = async (req: Request, res: Response) => {
 
     return res.status(200).json({ message: "AI credential deleted" });
   } catch (error) {
-    logger.error("[deleteAiCredential]", error);
+    logger.error({ err: error }, "[deleteAiCredential]");
     return res.status(500).json({ message: "Failed to delete AI credential" });
   }
 };
@@ -176,7 +176,7 @@ export const generateReplCode = async (req: Request, res: Response) => {
     if (!parsed.success) {
       return res.status(400).json({
         message: "Validation failed",
-        errors: parsed.error.flatten().fieldErrors,
+        errors: parsed.error.flatten((i) => i.message).fieldErrors,
       });
     }
 
@@ -226,7 +226,7 @@ export const generateReplCode = async (req: Request, res: Response) => {
         completionTokens: result.usage.completionTokens,
         totalTokens:      result.usage.totalTokens,
       },
-    }).catch((err: unknown) => logger.error("[aiUsage]", err));
+    }).catch((err: unknown) => logger.error({ err: err }, "[aiUsage]"));
 
     return res.status(200).json({
       content: result.content,
@@ -235,7 +235,7 @@ export const generateReplCode = async (req: Request, res: Response) => {
       credentialName: activeCredential.name,
     });
   } catch (error) {
-    logger.error("[generateReplCode]", error);
+    logger.error({ err: error }, "[generateReplCode]");
     return res.status(500).json({
       message: error instanceof Error ? error.message : "Failed to generate code",
     });
@@ -246,7 +246,7 @@ export const streamReplCode = async (req: Request, res: Response) => {
   try {
     const parsed = GenerateReplCodeSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ message: "Validation failed", errors: parsed.error.flatten().fieldErrors });
+      return res.status(400).json({ message: "Validation failed", errors: parsed.error.flatten((i) => i.message).fieldErrors });
     }
 
     const userId = getUserId(req);
@@ -287,7 +287,7 @@ export const streamReplCode = async (req: Request, res: Response) => {
     res.write(`data: ${JSON.stringify({ done: true, provider: activeCredential.provider, credentialName: activeCredential.name })}\n\n`);
     res.end();
   } catch (error) {
-    logger.error("[streamReplCode]", error);
+    logger.error({ err: error }, "[streamReplCode]");
     if (!res.headersSent) {
       return res.status(500).json({ message: error instanceof Error ? error.message : "Stream failed" });
     }
@@ -295,3 +295,5 @@ export const streamReplCode = async (req: Request, res: Response) => {
     res.end();
   }
 };
+
+

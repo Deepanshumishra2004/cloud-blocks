@@ -62,7 +62,7 @@ export const getReplRuntimeUrls = (replId: string) => {
   };
 };
 
-export const provisionReplRuntime = async (replId: string, type: string) => {
+export const provisionReplRuntime = async (replId: string, type: string, userId: string) => {
   const cleanReplId = safeReplId(replId);
   const podName = `repl-${cleanReplId}`;
   const serviceName = `repl-${cleanReplId}-svc`;
@@ -87,12 +87,14 @@ export const provisionReplRuntime = async (replId: string, type: string) => {
           image: REPL_IMAGE,
           imagePullPolicy: "Always",
           env: [
-            { name: "REPL_ID",     value: cleanReplId },
-            { name: "REPL_TYPE",   value: normalizedType },
-            { name: "S3_BUCKET",   value: env.S3_BUCKET ?? "" },
-            { name: "REDIS_URL",   value: env.REDIS_URL },
-            { name: "AWS_REGION",  value: env.AWS_REGION },
-            { name: "JWT_SECRET",  value: env.JWT_SECRET },
+            { name: "REPL_ID",       value: cleanReplId },
+            { name: "REPL_TYPE",     value: normalizedType },
+            { name: "USER_ID",       value: userId },
+            { name: "S3_BUCKET",     value: env.S3_BUCKET ?? "" },
+            { name: "REDIS_URL",     value: env.REDIS_URL },
+            { name: "R2_ACCOUNT_ID", value: env.R2_ACCOUNT_ID ?? "" },
+            { name: "JWT_SECRET",    value: env.JWT_SECRET },
+            { name: "PREVIEW_URL",   value: previewUrl },
           ],
           envFrom: [{ secretRef: { name: REPL_RUNTIME_SECRET } }],
           ports: [
@@ -158,12 +160,10 @@ export const provisionReplRuntime = async (replId: string, type: string) => {
         "nginx.ingress.kubernetes.io/proxy-read-timeout": "3600",
         "nginx.ingress.kubernetes.io/proxy-send-timeout": "3600",
         "nginx.ingress.kubernetes.io/proxy-http-version": "1.1",
-        "cert-manager.io/cluster-issuer": "selfsigned-issuer",
       },
     },
     spec: {
       ingressClassName: "nginx",
-      tls: [{ hosts: [host], secretName: `repl-${cleanReplId}-tls` }],
       rules: [
         {
           host,
@@ -201,30 +201,27 @@ export const provisionReplRuntime = async (replId: string, type: string) => {
   };
 
   try {
-    await coreApi.createNamespacedPod({
-      namespace: NAMESPACE,
-      body: pod,
-    });
+    await coreApi.createNamespacedPod({ namespace: NAMESPACE, body: pod });
   } catch (e) {
     if (!isAlreadyExistsError(e)) throw e;
-    logger.info(`[k8s] pod already exists for repl ${cleanReplId}`);
+    // Pod still Terminating from a previous stop — force-delete with zero grace and wait
+    logger.warn(`[k8s] pod repl-${cleanReplId} still exists (likely Terminating), force-deleting…`);
+    await coreApi
+      .deleteNamespacedPod({ name: podName, namespace: NAMESPACE })
+      .catch((delErr: unknown) => logger.warn(`[k8s] force-delete pod ignored: ${String(delErr)}`));
+    await waitForPodGone(cleanReplId);
+    await coreApi.createNamespacedPod({ namespace: NAMESPACE, body: pod });
   }
 
   try {
-    await coreApi.createNamespacedService({
-      namespace: NAMESPACE,
-      body: svc,
-    });
+    await coreApi.createNamespacedService({ namespace: NAMESPACE, body: svc });
   } catch (e) {
     if (!isAlreadyExistsError(e)) throw e;
     logger.info(`[k8s] service already exists for repl ${cleanReplId}`);
   }
 
   try {
-    await networkingApi.createNamespacedIngress({
-      namespace: NAMESPACE,
-      body: ing,
-    });
+    await networkingApi.createNamespacedIngress({ namespace: NAMESPACE, body: ing });
   } catch (e) {
     if (!isAlreadyExistsError(e)) throw e;
     logger.info(`[k8s] ingress already exists for repl ${cleanReplId}`);
@@ -242,6 +239,29 @@ export const provisionReplRuntime = async (replId: string, type: string) => {
 };
 
 export const createReplPod = provisionReplRuntime;
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((r) => (setTimeout as unknown as (fn: () => void, ms: number) => void)(r, ms));
+
+const waitForPodGone = async (cleanReplId: string, timeoutMs = 30_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const exists = await replPodExists(cleanReplId);
+    if (!exists) return;
+    await sleep(2_000);
+  }
+  throw new Error(`Timed out waiting for pod repl-${cleanReplId} to terminate`);
+};
+
+export const replPodExists = async (replId: string): Promise<boolean> => {
+  try {
+    const cleanReplId = safeReplId(replId);
+    await coreApi.readNamespacedPod({ name: `repl-${cleanReplId}`, namespace: NAMESPACE });
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 export const deleteReplPod = async (replId: string) => {
     const cleanReplId = safeReplId(replId);

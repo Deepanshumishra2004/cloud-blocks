@@ -1,12 +1,12 @@
-// src/controllers/plan.controller.ts
+﻿// src/controllers/plan.controller.ts
 import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { logger } from "../lib/logger";
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    GET ALL PLANS  GET /api/v1/plan/all
-   Public — shows available plans for landing/pricing page
-───────────────────────────────────────────────────────────── */
+   Public â€” shows available plans for landing/pricing page
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const getAllPlans = async (_req: Request, res: Response) => {
   try {
@@ -15,14 +15,14 @@ export const getAllPlans = async (_req: Request, res: Response) => {
     });
     return res.json({ plans });
   } catch (err) {
-    logger.error("[getAllPlans]", err);
+    logger.error({ err: err }, "[getAllPlans]");
     return res.status(500).json({ message: "Failed to fetch plans" });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    GET SINGLE PLAN  GET /api/v1/plan/:planId
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const getSinglePlan = async (req: Request, res: Response) => {
   try {
@@ -32,15 +32,15 @@ export const getSinglePlan = async (req: Request, res: Response) => {
     if (!plan) return res.status(404).json({ message: "Plan not found" });
     return res.json({ plan });
   } catch (err) {
-    logger.error("[getSinglePlan]", err);
+    logger.error({ err: err }, "[getSinglePlan]");
     return res.status(500).json({ message: "Failed to fetch plan" });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    CREATE PLAN  POST /api/v1/plan/create
-   Admin-only — use middleware to guard in production
-───────────────────────────────────────────────────────────── */
+   Admin-only â€” use middleware to guard in production
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const createPlan = async (req: Request, res: Response) => {
   try {
@@ -59,15 +59,15 @@ export const createPlan = async (req: Request, res: Response) => {
     if (err.code === "P2002") {
       return res.status(409).json({ message: "A plan with that name or Stripe price ID already exists" });
     }
-    logger.error("[createPlan]", err);
+    logger.error({ err: err }, "[createPlan]");
     return res.status(500).json({ message: "Failed to create plan" });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    DELETE PLAN  POST /api/v1/plan/delete
-   Admin-only — will fail if subscriptions reference this plan
-───────────────────────────────────────────────────────────── */
+   Admin-only â€” will fail if subscriptions reference this plan
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const deletePlan = async (req: Request, res: Response) => {
   try {
@@ -78,22 +78,22 @@ export const deletePlan = async (req: Request, res: Response) => {
     return res.status(200).json({ message: "Plan deleted" });
   } catch (err: any) {
     if (err.code === "P2025") return res.status(404).json({ message: "Plan not found" });
-    // P2003 = FK constraint — active subscriptions exist
+    // P2003 = FK constraint â€” active subscriptions exist
     if (err.code === "P2003") {
       return res.status(409).json({ message: "Cannot delete plan with active subscriptions" });
     }
-    logger.error("[deletePlan]", err);
+    logger.error({ err: err }, "[deletePlan]");
     return res.status(500).json({ message: "Failed to delete plan" });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    GET USER SUBSCRIPTION  GET /api/v1/plan/subscription
    Called by: billing page
    Returns current subscription + plan details.
    Falls back to a virtual "STARTER" object if no DB row exists
    (free users never get a Subscription row).
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const getUserSubscription = async (req: Request, res: Response) => {
   try {
@@ -131,15 +131,15 @@ export const getUserSubscription = async (req: Request, res: Response) => {
 
     return res.json({ subscription: sub });
   } catch (err) {
-    logger.error("[getUserSubscription]", err);
+    logger.error({ err: err }, "[getUserSubscription]");
     return res.status(500).json({ message: "Failed to fetch subscription" });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    GET USER USAGE  GET /api/v1/plan/usage
    Called by: billing page usage meters
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const getUserUsage = async (req: Request, res: Response) => {
   try {
@@ -160,7 +160,7 @@ export const getUserUsage = async (req: Request, res: Response) => {
     const maxRepls     = sub?.plan?.maxRepls     ?? 3;    // free tier defaults
     const maxStorageMB = sub?.plan?.maxStorageMB ?? 500;
 
-    // Storage and compute are placeholders — wire up real metrics
+    // Storage and compute are placeholders â€” wire up real metrics
     // once your sandbox layer tracks them (e.g. via K8s resource usage API)
     return res.json({
       usage: {
@@ -170,7 +170,8 @@ export const getUserUsage = async (req: Request, res: Response) => {
       },
     });
   } catch (err) {
-    logger.error("[getUserUsage]", err);
+    logger.error({ err: err }, "[getUserUsage]");
     return res.status(500).json({ message: "Failed to fetch usage" });
   }
 };
+

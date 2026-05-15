@@ -18,7 +18,13 @@ const EnvSchema = z.object({
 
   // ── Auth ─────────────────────────────────────────────────────
   JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 chars"),
+  // Optional. If omitted, derived deterministically from JWT_SECRET. Set
+  // explicitly in production so an access-token-only leak cannot be replayed
+  // as a refresh token.
+  REFRESH_TOKEN_SECRET: z.string().min(32, "REFRESH_TOKEN_SECRET must be at least 32 chars").optional(),
   AUTH_COOKIE_DOMAIN: z.string().optional(),
+  // Comma-separated list of user IDs granted admin privileges.
+  ADMIN_IDS: z.string().optional(),
 
   // ── App URLs ─────────────────────────────────────────────────
   APP_URL: z.string().url().default("http://localhost:3001"),
@@ -35,9 +41,9 @@ const EnvSchema = z.object({
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),
 
-  // ── AWS / Storage ────────────────────────────────────────────
+  // ── R2 / Storage ─────────────────────────────────────────────
   S3_BUCKET: z.string().optional(),
-  AWS_REGION: z.string().default("ap-south-1"),
+  R2_ACCOUNT_ID: z.string().optional(),
 
   // ── Kubernetes / Repl runtime ────────────────────────────────
   REPL_NAMESPACE: z.string().default("repls"),
@@ -49,6 +55,14 @@ const EnvSchema = z.object({
 
   // ── AI ───────────────────────────────────────────────────────
   AI_CREDENTIAL_SECRET: z.string().min(32).optional(),
+
+  // ── Email (SMTP via nodemailer) ──────────────────────────────
+  // Gmail: enable 2FA, generate App Password at
+  //   https://myaccount.google.com/apppasswords
+  // SMTP_USER = your gmail address, SMTP_PASS = the 16-char app password.
+  SMTP_USER: z.string().email().optional(),
+  SMTP_PASS: z.string().optional(),
+  EMAIL_FROM: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

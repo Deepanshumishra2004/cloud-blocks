@@ -8,19 +8,20 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, ".env"), override: true });
 
-if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
-  throw new Error("Missing AWS credentials in template/.env");
+if (!process.env.R2_ACCOUNT_ID || !process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+  throw new Error("Missing R2 credentials in template/.env");
 }
 
 const s3 = new S3Client({
-  region: "ap-south-1",
+  region: "auto",
+  endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
   credentials: {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   },
 });
 
-const BUCKET = "cloud-blocks";
+const BUCKET = process.env.R2_BUCKET ?? "cloud-blocks";
 const PREFIX = "template";
 
 async function uploadDirectory(localDir, s3Prefix) {

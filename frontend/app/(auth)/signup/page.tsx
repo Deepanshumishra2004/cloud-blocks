@@ -1,8 +1,8 @@
 "use client";
-// src/app/auth/signup/page.tsx
+
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardBody }    from "@/components/ui/Card";
 import { Button }            from "@/components/ui/Button";
 import { Input, FormField }  from "@/components/ui/Input";
@@ -28,7 +28,14 @@ interface FieldErrors {
 
 export default function SignUpPage() {
   const router  = useRouter();
-  const setAuth = useAuthStore((state) => state.setAuth);
+  const setAuth     = useAuthStore((s) => s.setAuth);
+  const user        = useAuthStore((s) => s.user);
+  const isHydrated  = useAuthStore((s) => s.isHydrated);
+
+  // Already authenticated — skip the form.
+  useEffect(() => {
+    if (isHydrated && user) router.replace("/dashboard");
+  }, [isHydrated, user, router]);
 
   const [form,        setForm]        = useState<FormState>({ email: "", username: "", password: "" });
   const [showPw,      setShowPw]      = useState(false);
@@ -60,7 +67,7 @@ export default function SignUpPage() {
     return Object.keys(errs).length === 0;
   }
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
     setError("");
     if (!validate()) return;

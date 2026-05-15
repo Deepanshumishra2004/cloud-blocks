@@ -1,28 +1,17 @@
 "use client";
-// src/hooks/useAuth.ts
 
 import { useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/authstore";
-import api, { fetchUser } from "@/lib/api"; // single source of truth
+import api from "@/lib/api";
 
-// ── useAuth ───────────────────────────────────────────────────
-// Call in any layout or page that needs the current user.
-//
-// Options:
-//   required: true  →  redirect to  if not authenticated
-//                       (use this in protected layouts, NOT individual pages)
 export function useAuth({ required = false } = {}) {
-  const { user, token, isHydrated, hydrate, logout } = useAuthStore();
+  const { user, token, isHydrated, logout } = useAuthStore();
   const router = useRouter();
 
-  // If AuthProvider hasn't run yet (e.g. in a unit test or Storybook),
-  // this hook will trigger hydration itself as a fallback.
-  useEffect(() => {
-    if (!isHydrated) hydrate(fetchUser);
-  }, [isHydrated, hydrate]);
-
-  // After hydration: redirect if page requires auth and user is absent
+  // After hydration: redirect to signin if this page requires auth.
+  // Hydration itself is initiated once by AuthProvider in the root layout —
+  // no duplicate fetchUser() calls here.
   useEffect(() => {
     if (isHydrated && required && !user) {
       router.replace("/signin");
@@ -31,7 +20,6 @@ export function useAuth({ required = false } = {}) {
 
   const signout = useCallback(async () => {
     try {
-      // Tell the backend to clear the HttpOnly cookie
       await api.post("/api/v1/user/signout");
     } catch {
       // Network error — clear locally regardless
@@ -50,7 +38,7 @@ export function useAuth({ required = false } = {}) {
   };
 }
 
-// Convenience hook for protected pages / layouts
+// Convenience alias for protected pages/layouts.
 export function useRequireAuth() {
   return useAuth({ required: true });
 }

@@ -1,44 +1,33 @@
 "use client";
 
 import * as React from "react";
+import * as ReactDOM from "react-dom";
 import { cn } from "@/lib/cn";
-
-/* ============================================================
-   DROPDOWN MENU
-   Lightweight implementation. For accessibility in production
-   consider using @radix-ui/react-dropdown-menu.
-
-   Usage:
-     <DropdownMenu>
-       <DropdownMenuTrigger>
-         <Button size="icon-sm" variant="ghost">⋯</Button>
-       </DropdownMenuTrigger>
-       <DropdownMenuContent align="end">
-         <DropdownMenuItem onSelect={() => rename()}>Rename</DropdownMenuItem>
-         <DropdownMenuSeparator />
-         <DropdownMenuItem variant="danger" onSelect={() => delete()}>Delete</DropdownMenuItem>
-       </DropdownMenuContent>
-     </DropdownMenu>
-   ============================================================ */
 
 interface DropdownContextValue {
   open: boolean;
   setOpen: (v: boolean) => void;
+  triggerRef: React.RefObject<HTMLDivElement | null>;
 }
+
 const DropdownContext = React.createContext<DropdownContextValue>({
   open: false,
   setOpen: () => {},
+  triggerRef: { current: null },
 });
 
 function DropdownMenu({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = React.useState(false);
-  const ref = React.useRef<HTMLDivElement>(null);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const triggerRef = React.useRef<HTMLDivElement>(null);
 
-  // close on outside click
   React.useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+      if (
+        containerRef.current && !containerRef.current.contains(e.target as Node) &&
+        triggerRef.current && !triggerRef.current.contains(e.target as Node)
+      ) {
         setOpen(false);
       }
     };
@@ -47,8 +36,8 @@ function DropdownMenu({ children }: { children: React.ReactNode }) {
   }, [open]);
 
   return (
-    <DropdownContext.Provider value={{ open, setOpen }}>
-      <div ref={ref} className="relative inline-block">
+    <DropdownContext.Provider value={{ open, setOpen, triggerRef }}>
+      <div ref={containerRef} className="relative inline-block">
         {children}
       </div>
     </DropdownContext.Provider>
@@ -56,9 +45,9 @@ function DropdownMenu({ children }: { children: React.ReactNode }) {
 }
 
 function DropdownMenuTrigger({ children }: { children: React.ReactNode }) {
-  const { open, setOpen } = React.useContext(DropdownContext);
+  const { open, setOpen, triggerRef } = React.useContext(DropdownContext);
   return (
-    <div onClick={() => setOpen(!open)} className="cursor-pointer">
+    <div ref={triggerRef} onClick={() => setOpen(!open)} className="cursor-pointer">
       {children}
     </div>
   );
@@ -71,28 +60,44 @@ export interface DropdownMenuContentProps {
 }
 
 function DropdownMenuContent({ align = "end", className, children }: DropdownMenuContentProps) {
-  const { open } = React.useContext(DropdownContext);
-  if (!open) return null;
+  const { open, triggerRef } = React.useContext(DropdownContext);
+  const [coords, setCoords] = React.useState<React.CSSProperties>({});
+  const [mounted, setMounted] = React.useState(false);
 
-  const alignClass = {
-    start:  "left-0",
-    end:    "right-0",
-    center: "left-1/2 -translate-x-1/2",
-  }[align];
+  React.useEffect(() => { setMounted(true); }, []);
 
-  return (
+  React.useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+
+    const style: React.CSSProperties = { top: rect.bottom + 4 };
+    if (align === "end") {
+      style.right = window.innerWidth - rect.right;
+    } else if (align === "start") {
+      style.left = rect.left;
+    } else {
+      style.left = rect.left + rect.width / 2;
+      style.transform = "translateX(-50%)";
+    }
+    setCoords(style);
+  }, [open, align, triggerRef]);
+
+  if (!open || !mounted) return null;
+
+  return ReactDOM.createPortal(
     <div
+      style={{ position: "fixed", zIndex: 9999, minWidth: 180, ...coords }}
       className={cn(
-        "absolute top-full mt-1 z-50 min-w-[180px]",
         "bg-cb-surface border border-cb rounded-lg shadow-cb-lg",
-        "p-1 py-1",
+        "p-1",
         "animate-in fade-in-0 zoom-in-95",
-        alignClass,
         className
       )}
+      onMouseDown={(e) => e.stopPropagation()}
     >
       {children}
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -123,7 +128,7 @@ function DropdownMenuItem({
         "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand",
         variant === "default"
           ? "text-cb-secondary hover:bg-cb-hover hover:text-cb-primary"
-          : "text-[var(--danger)] hover:bg-[var(--danger-subtle)] hover:border-[var(--danger-border)]",
+          : "text-(--danger) hover:bg-(--danger-subtle) hover:border-(--danger-border)",
         className
       )}
       onClick={() => {
@@ -144,12 +149,7 @@ function DropdownMenuSeparator({ className }: { className?: string }) {
 
 function DropdownMenuLabel({ className, children }: React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div
-      className={cn(
-        "px-3 py-1.5 text-2xs font-semibold text-cb-muted uppercase tracking-wider",
-        className
-      )}
-    >
+    <div className={cn("px-3 py-1.5 text-2xs font-semibold text-cb-muted uppercase tracking-wider", className)}>
       {children}
     </div>
   );

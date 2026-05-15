@@ -1,12 +1,37 @@
-import axios, { type AxiosInstance, type InternalAxiosRequestConfig } from "axios";
+import axios, {
+  type AxiosInstance,
+  type AxiosRequestConfig,
+  type InternalAxiosRequestConfig,
+} from "axios";
 import type { AuthUser } from "@/lib/authstore";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 const API_TIMEOUT_MS = 12_000;
-const AUTH_ROUTE_PREFIX = "/auth";
+const AUTH_PAGES = ["/signin", "/signup", "/callback", "/forgot-password", "/reset-password"];
 const SIGNIN_ROUTE = "/signin";
 
+const CSRF_COOKIE = "cb_csrf";
+const CSRF_HEADER = "X-CSRF-Token";
+
+// Endpoints whose 401 must NOT trigger an auto-refresh (the refresh itself,
+// the public bootstrap endpoints). Anything not matched here will get one
+// transparent refresh-then-retry on 401.
+const REFRESH_BLACKLIST = [
+  "/api/v1/user/refresh",
+  "/api/v1/user/signin",
+  "/api/v1/user/signup",
+  "/api/v1/user/exchange",
+  "/api/v1/user/forgot-password",
+  "/api/v1/user/reset-password",
+];
+
 const isBrowser = (): boolean => typeof window !== "undefined";
+
+function readCookie(name: string): string | null {
+  if (!isBrowser()) return null;
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
 
 export const api: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -15,13 +40,70 @@ export const api: AxiosInstance = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
-api.interceptors.request.use((config: InternalAxiosRequestConfig) => config);
+// Attach the CSRF header on every state-changing request. Reading the cookie
+// at request time (not module load) means it picks up newly issued tokens
+// after sign-in without a page reload.
+api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+  const method = (config.method ?? "get").toLowerCase();
+  if (method !== "get" && method !== "head" && method !== "options") {
+    const csrf = readCookie(CSRF_COOKIE);
+    if (csrf) {
+      config.headers = config.headers ?? {};
+      (config.headers as Record<string, string>)[CSRF_HEADER] = csrf;
+    }
+  }
+  return config;
+});
+
+// ─── 401 → silent refresh → retry once ───────────────────────────────────
+//
+// A single in-flight refresh promise is shared across concurrent 401s so a
+// burst of expired-token requests trigger one /refresh call, not N.
+
+let refreshPromise: Promise<boolean> | null = null;
+
+async function attemptRefresh(): Promise<boolean> {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    try {
+      await axios.post(
+        `${API_BASE_URL}/api/v1/user/refresh`,
+        {},
+        { withCredentials: true, timeout: API_TIMEOUT_MS },
+      );
+      return true;
+    } catch {
+      return false;
+    } finally {
+      // Release the lock after a tick so simultaneous callers all see the
+      // same outcome but the next 401 (later) can trigger a new refresh.
+      setTimeout(() => { refreshPromise = null; }, 0);
+    }
+  })();
+  return refreshPromise;
+}
+
+function isRefreshableUrl(url?: string): boolean {
+  if (!url) return false;
+  return !REFRESH_BLACKLIST.some((p) => url.includes(p));
+}
 
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error?.response?.status === 401 && isBrowser()) {
-      const onAuthPage = window.location.pathname.startsWith(AUTH_ROUTE_PREFIX);
+  async (error) => {
+    const original = error?.config as (AxiosRequestConfig & { _retried?: boolean }) | undefined;
+    const status = error?.response?.status;
+
+    if (status === 401 && original && !original._retried && isRefreshableUrl(original.url)) {
+      original._retried = true;
+      const ok = await attemptRefresh();
+      if (ok) {
+        return api(original);
+      }
+    }
+
+    if (status === 401 && isBrowser()) {
+      const onAuthPage = AUTH_PAGES.some((p) => window.location.pathname.startsWith(p));
       if (!onAuthPage) window.location.replace(SIGNIN_ROUTE);
     }
 
@@ -139,6 +221,17 @@ export async function fetchUser(): Promise<AuthUser | null> {
   return safe(async () => (await getData<{ user: AuthUser }>("/api/v1/user/me")).user, null);
 }
 
+export async function requestPasswordReset(email: string): Promise<void> {
+  await postData<{ message: string }, { email: string }>("/api/v1/user/forgot-password", { email });
+}
+
+export async function resetPassword(token: string, newPassword: string): Promise<void> {
+  await postData<{ message: string }, { token: string; newPassword: string }>(
+    "/api/v1/user/reset-password",
+    { token, newPassword },
+  );
+}
+
 export async function fetchAiCredentials(): Promise<AiCredential[]> {
   return safe(async () => (await getData<{ credentials: AiCredential[] }>("/api/v1/user/ai-credentials")).credentials, []);
 }
@@ -237,12 +330,18 @@ export async function streamReplCode(
   replId: string,
   payload: { prompt: string; filePath: string; currentContent: string; history?: Array<{ role: "user" | "assistant"; content: string }> },
   onChunk: (chunk: string) => void,
+  signal?: AbortSignal,
 ): Promise<{ provider: string; credentialName: string }> {
+  const csrf = readCookie(CSRF_COOKIE);
   const response = await fetch(`${API_BASE_URL}/api/v1/repl/${replId}/ai/stream`, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(csrf ? { [CSRF_HEADER]: csrf } : {}),
+    },
     body: JSON.stringify(payload),
+    signal,
   });
 
   if (!response.ok || !response.body) {

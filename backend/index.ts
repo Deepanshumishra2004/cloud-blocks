@@ -12,9 +12,11 @@ import apiRoutes from "./routes/routes";
 import { handleStripeWebhook } from "./controller/webhook.controller";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import { generalLimiter } from "./middleware/rateLimiters";
+import { csrfMiddleware } from "./middleware/csrfMiddleware";
 import { logger } from "./lib/logger";
 import { prisma } from "./lib/prisma";
 import { redis } from "./lib/redis";
+import { deleteReplPod } from "./services/k8s.service";
 
 const app = express();
 
@@ -61,6 +63,11 @@ app.use(cors({
 
 app.use(express.json({ limit: "1mb" }));
 
+// CSRF check runs before route handlers but after JSON parsing so we can read
+// the body length for logging if needed. Safe methods (GET/HEAD/OPTIONS) and
+// unauthenticated bootstrap endpoints are skipped inside the middleware.
+app.use(`${API}`, csrfMiddleware);
+
 // Broad ceiling on every API request. Per-route limiters add stricter caps where needed.
 app.use(`${API}`, generalLimiter, apiRoutes);
 
@@ -94,6 +101,22 @@ process.on("uncaughtException", (err) => {
   process.exit(1);
 });
 
-app.listen(PORT, () => {
+async function reconcileReplStates() {
+  try {
+    const stale = await prisma.repl.findMany({
+      where: { status: "RUNNING" },
+      select: { id: true },
+    });
+    if (stale.length === 0) return;
+    await Promise.all(stale.map((r) => deleteReplPod(r.id).catch(() => {})));
+    await prisma.repl.updateMany({ where: { status: "RUNNING" }, data: { status: "STOPPED" } });
+    logger.info({ count: stale.length }, "reconciled stale RUNNING repls → STOPPED");
+  } catch (err) {
+    logger.error({ err }, "reconcileReplStates failed — continuing startup");
+  }
+}
+
+app.listen(PORT, async () => {
   logger.info({ port: PORT, base: API }, "server started");
+  await reconcileReplStates();
 });

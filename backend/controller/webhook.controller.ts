@@ -1,4 +1,4 @@
-import type { Request, Response } from "express";
+﻿import type { Request, Response } from "express";
 import Stripe from "stripe";
 import { prisma } from "../lib/prisma";
 import { stripe } from "../lib/stripe";
@@ -6,7 +6,7 @@ import { logger } from "../lib/logger";
 import { env } from "../config/env";
 import type { SubscriptionStatus } from "../generated/prisma/enums";
 
-// ── moved outside handler so it's not recreated on every request ──
+// â”€â”€ moved outside handler so it's not recreated on every request â”€â”€
 const mapStatus = (status: Stripe.Subscription.Status): SubscriptionStatus => {
   switch (status) {
     case "active":             return "ACTIVE";
@@ -35,7 +35,7 @@ const getPeriod = (subscription: Stripe.Subscription) => {
 export const handleStripeWebhook = async (req: Request, res: Response) => {
   const sig = req.headers["stripe-signature"] as string;
 
-  // ── 1. verify signature ──────────────────────────────────────────
+  // â”€â”€ 1. verify signature â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   let event: Stripe.Event;
   try {
     event = stripe.webhooks.constructEvent(
@@ -44,13 +44,13 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
       env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    logger.error("[webhook] signature verification failed", err);
+    logger.error({ err: err }, "[webhook] signature verification failed");
     return res.status(400).send("Webhook Error");
   }
 
   logger.info(`[webhook] received eventId=${event.id} type=${event.type}`);
 
-  // ── 2. handle events ─────────────────────────────────────────────
+  // â”€â”€ 2. handle events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   try {
     const seen = await prisma.stripeEvent.findUnique({ where: { id: event.id } });
     if (seen) {
@@ -60,7 +60,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
 
     switch (event.type) {
 
-      // ── SUBSCRIPTION CREATED ──────────────────────────────────────
+      // â”€â”€ SUBSCRIPTION CREATED â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       case "customer.subscription.created": {
         const subscription = event.data.object as Stripe.Subscription;
 
@@ -101,7 +101,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
         break;
       }
 
-      // ── SUBSCRIPTION UPDATED ──────────────────────────────────────
+      // â”€â”€ SUBSCRIPTION UPDATED â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       case "customer.subscription.updated": {
         const subscription = event.data.object as Stripe.Subscription;
 
@@ -125,11 +125,11 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
         break;
       }
 
-      // ── SUBSCRIPTION DELETED ──────────────────────────────────────
+      // â”€â”€ SUBSCRIPTION DELETED â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       case "customer.subscription.deleted": {
         const subscription = event.data.object as Stripe.Subscription;
 
-        // DO NOT call stripe.subscriptions.cancel() here —
+        // DO NOT call stripe.subscriptions.cancel() here â€”
         // this event fires AFTER Stripe has already canceled it.
         // Calling cancel again would throw a "already canceled" error.
         const updated = await prisma.subscription.updateMany({
@@ -145,7 +145,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
         break;
       }
 
-      // ── PAYMENT SUCCESS ───────────────────────────────────────────
+      // â”€â”€ PAYMENT SUCCESS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       case "invoice.payment_succeeded": {
         const invoice = event.data.object as Stripe.Invoice;
 
@@ -164,7 +164,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
           break;
         }
 
-        // idempotency — prevent duplicate payment rows on Stripe retries
+        // idempotency â€” prevent duplicate payment rows on Stripe retries
         const existingPayment = await prisma.payment.findFirst({
           where: { providerId: invoice.id },
         });
@@ -189,7 +189,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
         break;
       }
 
-      // ── PAYMENT FAILED ────────────────────────────────────────────
+      // â”€â”€ PAYMENT FAILED â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       case "invoice.payment_failed": {
         const invoice = event.data.object as Stripe.Invoice;
 

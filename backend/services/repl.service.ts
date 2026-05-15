@@ -14,7 +14,7 @@ export const startRepl = async (replId: string, userId: string) => {
     })
     if (!repl || repl.userId !== userId) throw new Error("Repl not found");
 
-    const podUrl = await createReplPod(replId, repl.type);
+    const runtime = await createReplPod(replId, repl.type, userId);
 
     await prisma?.repl.update({
         where: { id: replId },
@@ -23,10 +23,10 @@ export const startRepl = async (replId: string, userId: string) => {
         }
     })
 
-    await redis.set(`repl:pod:${replId}`, podUrl, "EX", 3600);
+    await redis.set(`repl:pod:${replId}`, runtime.wsUrl, "EX", 3600);
     await redis.sadd("repls:running",replId);
 
-    return podUrl;
+    return runtime.wsUrl;
 }
 
 export const stopRepl = async (replId: string) => {

@@ -25,6 +25,7 @@ const NAV_MAIN = [
 const NAV_ACCOUNT = [
   { href: "/dashboard/settings", icon: <GearIcon />, label: "Settings" },
   { href: "/dashboard/billing",  icon: <CardIcon />, label: "Billing"  },
+  { href: "/dashboard/keys",     icon: <KeyIcon />,  label: "AI Keys"  },
 ];
 const PLAN_ORDER: PlanName[] = ["FREE", "PRO", "TEAMS"];
 
@@ -208,6 +209,7 @@ function buildCrumbs(pathname: string) {
     "/dashboard/explore":  "Explore",
     "/dashboard/settings": "Settings",
     "/dashboard/billing":  "Billing",
+    "/dashboard/keys":     "AI Keys",
   };
   if (pathname === "/dashboard") return [{ label: "Home" }];
   return [{ label: "Dashboard", href: "/dashboard" }, { label: MAP[pathname] ?? "Page" }];
@@ -222,4 +224,5 @@ function StorageIcon()   { return <svg width="14" height="14" viewBox="0 0 16 16
 function ChevronDownIcon(){ return <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M3 4.5L6 7.5l3-3"/></svg>; }
 function ProfileIcon()   { return <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3 2.69-5 6-5s6 2 6 5"/></svg>; }
 function SignOutIcon()   { return <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M6 2H3a1 1 0 00-1 1v10a1 1 0 001 1h3M10 11l4-3-4-3M14 8H6"/></svg>; }
+function KeyIcon()       { return <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="6" cy="8" r="3.5"/><path d="M9 8h6M13 8v2"/></svg>; }
 

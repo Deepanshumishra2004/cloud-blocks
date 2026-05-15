@@ -1,4 +1,4 @@
-// src/controllers/subscription.controller.ts
+﻿// src/controllers/subscription.controller.ts
 import type { Request, Response } from "express";
 import Stripe from "stripe";
 import { prisma } from "../lib/prisma";
@@ -9,11 +9,11 @@ const stripe = new Stripe(env.STRIPE_SECRET_KEY, {
   apiVersion: "2026-01-28.clover",
 });
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    GET USER SUBSCRIPTION  GET /api/v1/subscription/:id
    Note: frontend uses GET /api/v1/plan/subscription instead.
    This route exists for admin/internal lookups by subscription id.
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const getUserSubscription = async (req: Request, res: Response) => {
   try {
@@ -29,16 +29,16 @@ export const getUserSubscription = async (req: Request, res: Response) => {
 
     return res.json({ subscription: sub });
   } catch (err) {
-    logger.error("[getUserSubscription]", err);
+    logger.error({ err: err }, "[getUserSubscription]");
     return res.status(500).json({ message: "Failed to fetch subscription" });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    CANCEL SUBSCRIPTION  DELETE /api/v1/subscription/delete
    Cancels at period end (not immediately) so the user keeps
    access until their paid period expires.
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const cancelSubscription = async (req: Request, res: Response) => {
   try {
@@ -57,12 +57,12 @@ export const cancelSubscription = async (req: Request, res: Response) => {
       return res.status(409).json({ message: "Subscription is already canceled" });
     }
 
-    // cancel_at_period_end: true — user keeps access until period ends
+    // cancel_at_period_end: true â€” user keeps access until period ends
     await stripe.subscriptions.update(sub.stripeSubscriptionId, {
       cancel_at_period_end: true,
     });
 
-    // Mark CANCELED locally — the webhook will confirm on actual expiry
+    // Mark CANCELED locally â€” the webhook will confirm on actual expiry
     const updated = await prisma.subscription.update({
       where: { id: sub.id },
       data:  { status: "CANCELED" },
@@ -73,7 +73,7 @@ export const cancelSubscription = async (req: Request, res: Response) => {
       subscription: updated,
     });
   } catch (err) {
-    logger.error("[cancelSubscription]", err);
+    logger.error({ err: err }, "[cancelSubscription]");
     return res.status(500).json({ message: "Failed to cancel subscription" });
   }
 };

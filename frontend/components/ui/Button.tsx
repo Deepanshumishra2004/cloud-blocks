@@ -107,7 +107,9 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     return (
       <Comp
         ref={ref}
-        type={type ?? "button"}
+        // type is only valid on <button>. When asChild=true, Comp is Radix Slot,
+        // which clones its child and merges props — passing type to a Fragment child throws.
+        {...(!asChild ? { type: type ?? "button" } : {})}
         disabled={isDisabled}
         className={cn(
           "inline-flex items-center justify-center gap-2",
@@ -124,6 +126,8 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       >
         {loading ? (
           <Spinner size={size === "lg" ? 16 : 14} />
+        ) : asChild ? (
+          children
         ) : (
           <>
             {leftIcon && <span className="shrink-0">{leftIcon}</span>}

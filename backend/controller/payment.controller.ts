@@ -1,4 +1,4 @@
-// src/controllers/payment.controller.ts
+﻿// src/controllers/payment.controller.ts
 import type { Request, Response } from "express";
 import Stripe from "stripe";
 import { prisma } from "../lib/prisma";
@@ -13,9 +13,9 @@ const stripe = new Stripe(env.STRIPE_SECRET_KEY, {
 
 type SubscriptionWithPeriod = Stripe.Subscription;
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    CREATE CHECKOUT SESSION  POST /api/v1/payment/checkout
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 const PlanSChema = z.object({
   PlanNames: z.enum(PlanName),
@@ -73,14 +73,14 @@ export const createCheckout = async (req: Request, res: Response) => {
 
     return res.json({ url: session.url });
   } catch (err) {
-    logger.error("[createCheckout]", err);
+    logger.error({ err: err }, "[createCheckout]");
     return res.status(500).json({ message: "Failed to create checkout session" });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    STRIPE WEBHOOK  POST /api/v1/payment/webhook
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 // Helper: get period from sub top-level (2026-01-28.clover moved
 // current_period_* from items.data[0] to the subscription root)
@@ -112,7 +112,7 @@ export const stripeWebhook = async (req: Request, res: Response) => {
   try {
     switch (event.type) {
 
-      /* ── Checkout completed → provision subscription ── */
+      /* â”€â”€ Checkout completed â†’ provision subscription â”€â”€ */
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
         if (session.mode !== "subscription") break;
@@ -165,11 +165,11 @@ export const stripeWebhook = async (req: Request, res: Response) => {
         break;
       }
 
-      /* ── Renewal payment succeeded → update period + record payment ── */
+      /* â”€â”€ Renewal payment succeeded â†’ update period + record payment â”€â”€ */
       case "invoice.payment_succeeded": {
         const invoice = event.data.object as Stripe.Invoice;
 
-        // Skip — checkout.session.completed already handles the first payment
+        // Skip â€” checkout.session.completed already handles the first payment
         if (invoice.billing_reason === "subscription_create") break;
         if (typeof invoice.parent?.subscription_details?.subscription !== "string") break;
 
@@ -205,7 +205,7 @@ export const stripeWebhook = async (req: Request, res: Response) => {
         break;
       }
 
-      /* ── Subscription canceled ── */
+      /* â”€â”€ Subscription canceled â”€â”€ */
       case "customer.subscription.deleted": {
         const stripeSub = event.data.object as Stripe.Subscription;
         await prisma.subscription.update({
@@ -215,7 +215,7 @@ export const stripeWebhook = async (req: Request, res: Response) => {
         break;
       }
 
-      /* ── Payment failed → mark PAST_DUE ── */
+      /* â”€â”€ Payment failed â†’ mark PAST_DUE â”€â”€ */
       case "invoice.payment_failed": {
         const invoice = event.data.object as Stripe.Invoice;
 
@@ -240,7 +240,7 @@ export const stripeWebhook = async (req: Request, res: Response) => {
 
     return res.status(200).json({ received: true });
   } catch (err) {
-    logger.error("[webhook] Handler error:", err);
+    logger.error({ err: err }, "[webhook] Handler error:");
     return res.status(500).json({ message: "Webhook processing failed" });
   }
 };

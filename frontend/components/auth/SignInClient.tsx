@@ -1,61 +1,74 @@
 "use client";
-// src/app/signin/page.tsx
+
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Card, CardBody } from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
+import { Card, CardBody }   from "@/components/ui/Card";
+import { Button }           from "@/components/ui/Button";
 import { Input, FormField } from "@/components/ui/Input";
-import { Alert } from "@/components/ui/Alert";
-import { AuthHeader } from "@/components/auth/AuthHeader";
-import { AuthDivider } from "@/components/auth/AuthDivider";
-import { OAuthButtons } from "@/components/auth/OAuthButtons";
-import { useAuthStore } from "@/lib/authstore";
-import { isAxiosError } from "axios";
-import api from "@/lib/api";
+import { Alert }            from "@/components/ui/Alert";
+import { AuthHeader }       from "@/components/auth/AuthHeader";
+import { AuthDivider }      from "@/components/auth/AuthDivider";
+import { OAuthButtons }     from "@/components/auth/OAuthButtons";
+import { useAuthStore }     from "@/lib/authstore";
+import { isAxiosError }     from "axios";
+import api                  from "@/lib/api";
 
 const OAUTH_ERRORS: Record<string, string> = {
-  oauth_denied: "Sign-in was cancelled.",
-  oauth_failed: "OAuth sign-in failed. Please try again.",
+  oauth_denied:       "Sign-in was cancelled.",
+  oauth_failed:       "OAuth sign-in failed. Please try again.",
   email_not_verified: "Your Google email is not verified.",
 };
 
+// Only allow relative paths to prevent open-redirect attacks.
+function safeNext(raw: string | null): string {
+  if (!raw) return "/dashboard";
+  return raw.startsWith("/") && !raw.startsWith("//") ? raw : "/dashboard";
+}
+
 export default function SignInClient() {
-  const router = useRouter();
+  const router       = useRouter();
   const searchParams = useSearchParams();
-  const setAuth = useAuthStore((state) => state.setAuth);
+  const setAuth    = useAuthStore((s) => s.setAuth);
+  const user       = useAuthStore((s) => s.user);
+  const isHydrated = useAuthStore((s) => s.isHydrated);
 
-  const [email, setEmail] = useState("");
+  const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
-  const [showPw, setShowPw] = useState(false);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [showPw,   setShowPw]   = useState(false);
+  const [error,    setError]    = useState("");
+  const [loading,  setLoading]  = useState(false);
 
+  const next = safeNext(searchParams.get("next"));
+
+  // If already authenticated, skip the sign-in form.
+  useEffect(() => {
+    if (isHydrated && user) router.replace(next);
+  }, [isHydrated, user, next, router]);
+
+  // Surface OAuth errors forwarded via query param.
   useEffect(() => {
     const err = searchParams.get("error");
-
     if (err) {
       setError(OAUTH_ERRORS[err] ?? "An error occurred.");
       window.history.replaceState({}, "", "/signin");
     }
   }, [searchParams]);
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
     setError("");
     setLoading(true);
 
     try {
-      const { data } = await api.post("/api/v1/user/signin", {
-        email,
-        password,
-      });
-
+      const { data } = await api.post("/api/v1/user/signin", { email, password });
       setAuth(data.user, null);
-      router.push("/dashboard");
+      router.push(next);
     } catch (err: unknown) {
       setError(
-        isAxiosError(err) ? err.response?.data?.message ?? "Sign in failed. Please try again." : "Sign in failed. Please try again."
+        isAxiosError(err)
+          ? err.response?.data?.message ?? "Sign in failed. Please try again."
+          : "Sign in failed. Please try again.",
       );
     } finally {
       setLoading(false);
@@ -90,18 +103,10 @@ export default function SignInClient() {
             />
           </FormField>
 
-          <FormField
-            label="Password"
-            required
-            hint={
-              <Link href="/auth/forgot-password" className="text-brand hover:underline text-2xs">
-                Forgot password?
-              </Link>
-            }
-          >
+          <FormField label="Password" required>
             <Input
               type={showPw ? "text" : "password"}
-              placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
+              placeholder="••••••••"
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -121,11 +126,17 @@ export default function SignInClient() {
           </FormField>
 
           <Button type="submit" variant="primary" size="md" fullWidth loading={loading} className="mt-1">
-            Sign In â†’
+            Sign in →
           </Button>
         </form>
 
-        <p className="text-center text-sm text-cb-secondary mt-6">
+        <p className="text-center text-sm text-cb-secondary mt-4">
+          <Link href="/forgot-password" className="text-brand font-medium hover:underline">
+            Forgot password?
+          </Link>
+        </p>
+
+        <p className="text-center text-sm text-cb-secondary mt-2">
           Don&apos;t have an account?{" "}
           <Link href="/signup" className="text-brand font-medium hover:underline">
             Sign up free

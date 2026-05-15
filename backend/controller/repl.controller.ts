@@ -1,14 +1,14 @@
-// src/controllers/repl.controller.ts
+﻿// src/controllers/repl.controller.ts
 import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { z }      from "zod";
-import { deleteReplPod, getReplRuntimeUrls, provisionReplRuntime } from "../services/k8s.service";
+import { deleteReplPod, getReplRuntimeUrls, provisionReplRuntime, replPodExists } from "../services/k8s.service";
 import { seedReplFromTemplate } from "../services/repl-storage.service";
 import { logger } from "../lib/logger";
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    VALIDATION
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 const REPL_TYPES = ["BUN", "JAVASCRIPT", "NODE", "REACT", "NEXT"] as const;
 
@@ -40,9 +40,9 @@ const REPL_SELECT = {
   updatedAt: true,
 } as const;
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    HELPERS
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 // Ensure the repl belongs to the requesting user before any mutation
 async function ownedRepl(replId: string, userId: string) {
@@ -52,9 +52,9 @@ async function ownedRepl(replId: string, userId: string) {
   });
 }
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    GET ALL  GET /api/v1/repl/all
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const getAllRepls = async (req: Request, res: Response) => {
   try {
@@ -73,35 +73,39 @@ export const getAllRepls = async (req: Request, res: Response) => {
 
     return res.json({ repls: withLastActive });
   } catch (err) {
-    logger.error("[getAllRepls]", err);
+    logger.error({ err: err }, "[getAllRepls]");
     return res.status(500).json({ message: "Failed to fetch repls" });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    GET ONE  GET /api/v1/repl/:replId
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const getReplById = async (req: Request, res: Response) => {
   try {
     const repl = await ownedRepl((req as any).params.replId, (req as any).userId);
     if (!repl) return res.status(404).json({ message: "Repl not found" });
 
-    return res.json({
-      repl:
-        repl.status === "RUNNING"
-          ? { ...repl, ...getReplRuntimeUrls(repl.id) }
-          : repl,
-    });
+    if (repl.status === "RUNNING") {
+      const podAlive = await replPodExists(repl.id);
+      if (!podAlive) {
+        await prisma.repl.update({ where: { id: repl.id }, data: { status: "STOPPED" } });
+        return res.json({ repl: { ...repl, status: "STOPPED" } });
+      }
+      return res.json({ repl: { ...repl, ...getReplRuntimeUrls(repl.id) } });
+    }
+
+    return res.json({ repl });
   } catch (err) {
-    logger.error("[getReplById]", err);
+    logger.error({ err: err }, "[getReplById]");
     return res.status(500).json({ message: "Failed to fetch repl" });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    CREATE  POST /api/v1/repl/create
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const createRepl = async (req: Request, res: Response) => {
   try {
@@ -109,7 +113,7 @@ export const createRepl = async (req: Request, res: Response) => {
     if (!parsed.success) {
       return res.status(400).json({
         message: "Validation failed",
-        errors:  parsed.error.flatten().fieldErrors,
+        errors:  parsed.error.flatten((i) => i.message).fieldErrors,
       });
     }
 
@@ -141,20 +145,20 @@ export const createRepl = async (req: Request, res: Response) => {
       select: REPL_SELECT,
     });
 
-    await seedReplFromTemplate(repl.id, repl.type).catch((error) => {
-      logger.error("[createRepl:seedTemplate]", error);
+    await seedReplFromTemplate(repl.id, repl.type, userId).catch((error) => {
+      logger.error({ err: error }, "[createRepl:seedTemplate]");
     });
 
     return res.status(201).json({ repl });
   } catch (err) {
-    logger.error("[createRepl]", err);
+    logger.error({ err: err }, "[createRepl]");
     return res.status(500).json({ message: "Failed to create repl" });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    UPDATE (RENAME)  PATCH /api/v1/repl/:replId
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const updateRepl = async (req: Request, res: Response) => {
   try {
@@ -162,7 +166,7 @@ export const updateRepl = async (req: Request, res: Response) => {
     if (!parsed.success) {
       return res.status(400).json({
         message: "Validation failed",
-        errors:  parsed.error.flatten().fieldErrors,
+        errors:  parsed.error.flatten((i) => i.message).fieldErrors,
       });
     }
 
@@ -177,14 +181,14 @@ export const updateRepl = async (req: Request, res: Response) => {
 
     return res.json({ repl });
   } catch (err) {
-    logger.error("[updateRepl]", err);
+    logger.error({ err: err }, "[updateRepl]");
     return res.status(500).json({ message: "Failed to rename repl" });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    DELETE  DELETE /api/v1/repl/delete/:replId
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const deleteRepl = async (req: Request, res: Response) => {
   try {
@@ -200,31 +204,27 @@ export const deleteRepl = async (req: Request, res: Response) => {
     await prisma.repl.delete({ where: { id: (req as any).params.replId } });
     return res.status(200).json({ message: "Repl deleted" });
   } catch (err) {
-    logger.error("[deleteRepl]", err);
+    logger.error({ err: err }, "[deleteRepl]");
     return res.status(500).json({ message: "Failed to delete repl" });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    START  POST /api/v1/repl/:replId/start
    Marks the repl RUNNING in DB. Wire up your K8s/sandbox
-   provisioning here — update status once pod is ready.
-───────────────────────────────────────────────────────────── */
+   provisioning here â€” update status once pod is ready.
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const startRepl = async (req: Request, res: Response) => {
   try {
     const existing = await ownedRepl((req as any).params.replId, (req as any).userId);
     if (!existing) return res.status(404).json({ message: "Repl not found" });
 
-    if (existing.status === "RUNNING") {
-      return res.status(409).json({ message: "Repl is already running" });
-    }
-
     let runtime;
     try {
-      runtime = await provisionReplRuntime(existing.id, existing.type);
+      runtime = await provisionReplRuntime(existing.id, existing.type, (req as any).userId);
     } catch (provisionErr) {
-      logger.error("[startRepl:provision]", provisionErr);
+      logger.error({ err: provisionErr }, "[startRepl:provision]");
 
       const e = provisionErr as {
         statusCode?: number;
@@ -239,7 +239,7 @@ export const startRepl = async (req: Request, res: Response) => {
       });
     }    
 
-    const repl = await prisma.repl.update({
+    await prisma.repl.update({
       where:  { id: existing.id },
       data:   { status: "RUNNING" },
       select: REPL_SELECT,
@@ -254,14 +254,14 @@ export const startRepl = async (req: Request, res: Response) => {
       host: runtime.host,
     });
   } catch (err) {
-    logger.error("[startRepl]", err);
+    logger.error({ err: err }, "[startRepl]");
     return res.status(500).json({ message: "Failed to start repl" });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    STOP  POST /api/v1/repl/:replId/stop
-───────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export const stopRepl = async (req: Request, res: Response) => {
   try {
@@ -282,14 +282,14 @@ export const stopRepl = async (req: Request, res: Response) => {
 
     return res.json({ repl });
   } catch (err) {
-    logger.error("[stopRepl]", err);
+    logger.error({ err: err }, "[stopRepl]");
     return res.status(500).json({ message: "Failed to stop repl" });
   }
 };
 
-/* ─────────────────────────────────────────────────────────────
-   HELPER — relative time string for lastActive
-───────────────────────────────────────────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+   HELPER â€” relative time string for lastActive
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 function formatRelative(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -298,3 +298,5 @@ function formatRelative(ms: number): string {
   if (s < 86400)       return `${Math.floor(s / 3600)}h ago`;
   return               `${Math.floor(s / 86400)}d ago`;
 }
+
+

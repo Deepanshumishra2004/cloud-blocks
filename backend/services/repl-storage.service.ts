@@ -7,9 +7,14 @@ import { env } from "../config/env";
 import { logger } from "../lib/logger";
 
 const S3_BUCKET = env.S3_BUCKET;
-const AWS_REGION = env.AWS_REGION;
+const R2_ACCOUNT_ID = env.R2_ACCOUNT_ID;
 
-const s3 = S3_BUCKET ? new S3Client({ region: AWS_REGION }) : null;
+const s3 = S3_BUCKET && R2_ACCOUNT_ID
+  ? new S3Client({
+      region: "auto",
+      endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    })
+  : null;
 
 const TEMPLATE_NAME_BY_REPL_TYPE: Record<string, string> = {
   BUN: "bun",
@@ -22,15 +27,15 @@ const TEMPLATE_NAME_BY_REPL_TYPE: Record<string, string> = {
 export const getTemplateNameForReplType = (replType: string) =>
   TEMPLATE_NAME_BY_REPL_TYPE[replType] ?? replType.toLowerCase();
 
-export const seedReplFromTemplate = async (replId: string, replType: string) => {
+export const seedReplFromTemplate = async (replId: string, replType: string, userId: string) => {
   if (!s3 || !S3_BUCKET) {
-    logger.warn("[seedReplFromTemplate] S3_BUCKET is not configured, skipping seed");
+    logger.warn("[seedReplFromTemplate] R2 storage is not configured, skipping seed");
     return;
   }
 
   const templateName = getTemplateNameForReplType(replType);
   const sourcePrefix = `template/${templateName}/`;
-  const destinationPrefix = `repls/${replId}/${templateName}/`;
+  const destinationPrefix = `workspace/${userId}/${replId}/`;
 
   const listed = await s3.send(
     new ListObjectsV2Command({

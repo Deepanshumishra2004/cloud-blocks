@@ -9,7 +9,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/lib/authstore";
-import { fetchUser } from "@/lib/api";
+import api from "@/lib/api";
 
 const ERROR_MESSAGES: Record<string, string> = {
   oauth_denied: "You cancelled the sign-in.",
@@ -36,11 +36,16 @@ function CallbackInner() {
 
     if (error) return;
 
-    fetchUser()
-      .then((user) => {
-        if (!user) throw new Error("Missing authenticated user");
+    const code = searchParams.get("code");
+    if (!code) {
+      setErrMsg("No session code returned from OAuth provider.");
+      setStatus("error");
+      return;
+    }
 
-        setAuth(user, null);
+    api.post<{ user: Parameters<typeof setAuth>[0] }>("/api/v1/user/exchange", { code })
+      .then(({ data }) => {
+        setAuth(data.user, null);
         setStatus("success");
         router.replace(next);
       })
@@ -48,7 +53,7 @@ function CallbackInner() {
         setErrMsg("Could not verify your account. The session may be missing or expired.");
         setStatus("error");
       });
-  }, [error, next, router, setAuth]);
+  }, [error, next, router, searchParams, setAuth]);
 
   const message = status === "success" ? "Welcome! Redirecting..." : "Verifying your account...";
 

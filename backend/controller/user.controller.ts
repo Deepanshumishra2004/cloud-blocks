@@ -2,7 +2,7 @@
 import type { CookieOptions, Request, Response } from "express";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
-import { prisma } from "../lib/prisma";
+import { prisma, withPrismaRetry } from "../lib/prisma";
 import { redis } from "../lib/redis";
 import {
   signAccessToken,
@@ -25,6 +25,7 @@ import {
   exchangeGithubCode, getGithubProfile,
 } from "../services/oauth.service";
 import { env, isProd } from "../config/env";
+import { getAuthCookieSecurity } from "../lib/authCookiePolicy";
 import { logger } from "../lib/logger";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -41,12 +42,12 @@ const USER_SELECT = {
   createdAt: true,
 } as const;
 
-async function deriveUniqueUsername(base: string): Promise<string> {
+async function deriveUniqueUsername(base: string, db = prisma): Promise<string> {
   const slug = base.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 15) || "user";
-  if (!await prisma.user.findUnique({ where: { username: slug } })) return slug;
+  if (!await db.user.findUnique({ where: { username: slug } })) return slug;
   for (let i = 0; i < 5; i++) {
     const candidate = `${slug}${Math.random().toString(36).slice(2, 6)}`;
-    if (!await prisma.user.findUnique({ where: { username: candidate } })) return candidate;
+    if (!await db.user.findUnique({ where: { username: candidate } })) return candidate;
   }
   return `${slug}${Date.now().toString(36).slice(-6)}`;
 }
@@ -63,8 +64,7 @@ const REFRESH_COOKIE_PATH = "/api/v1/user/refresh";
 function buildAccessCookieOptions(): CookieOptions {
   return {
     httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? "none" : "lax",
+    ...getAuthCookieSecurity(isProd),
     // Cookie lifetime is intentionally decoupled from JWT lifetime. The JWT
     // inside expires every 15 minutes — when the server rejects an expired
     // token the frontend interceptor calls /refresh which overwrites the
@@ -80,12 +80,7 @@ function buildAccessCookieOptions(): CookieOptions {
 function buildRefreshCookieOptions(): CookieOptions {
   return {
     httpOnly: true,
-    secure: isProd,
-    // Refresh cookie travels first-party only — sameSite=strict is correct.
-    // (Access cookie can't use strict because the frontend lives on a
-    // different origin in prod; refresh is only ever called from our SPA
-    // after page load, never from a top-level cross-site navigation.)
-    sameSite: isProd ? "none" : "lax",
+    ...getAuthCookieSecurity(isProd),
     maxAge: REFRESH_TTL_SECS * 1000,
     path: REFRESH_COOKIE_PATH,
     ...(env.AUTH_COOKIE_DOMAIN ? { domain: env.AUTH_COOKIE_DOMAIN } : {}),
@@ -582,18 +577,20 @@ export const exchangeOAuthCode = async (req: Request, res: Response) => {
   try {
     const { code } = req.body as { code?: string };
 
-    console.log("[backend-request] : ",req.body);
     if (!code) return res.status(400).json({ message: "Code required" });
 
-    const userId = await redis.get(`oauth:code:${code}`);
+    const userId = await (redis as any).getdel?.(`oauth:code:${code}`) ?? await redis.get(`oauth:code:${code}`);
     if (!userId) return res.status(401).json({ message: "Invalid or expired code" });
+    if (!(redis as any).getdel) {
+      await redis.del(`oauth:code:${code}`);
+    }
 
-    await redis.del(`oauth:code:${code}`);
-
-    const user = await prisma.user.findUnique({
-      where:  { id: userId },
-      select: USER_SELECT,
-    });
+    const user = await withPrismaRetry((db) =>
+      db.user.findUnique({
+        where:  { id: userId },
+        select: USER_SELECT,
+      })
+    );
     if (!user) return res.status(404).json({ message: "User not found" });
 
     await issueAuthTokens(res, user.id);
@@ -616,8 +613,6 @@ export const googleInit = async (_req: Request, res: Response) => {
 export const googleCallback = async (req: Request, res: Response) => {
   const { code, error, state } = req.query as Record<string, string>;
 
-  console.log("[backend-request] : ",req.query);
-
   const fe = env.FRONTEND_URL;
 
   if (error || !code) return res.redirect(`${fe}/callback?error=oauth_denied`);
@@ -631,31 +626,31 @@ export const googleCallback = async (req: Request, res: Response) => {
     const tokens  = await exchangeGoogleCode(code);
     const profile = await getGoogleProfile(tokens.access_token);
 
-    console.log("[tokens] : ",tokens)
-    console.log("[profile] : ",profile.email_verified)
     if (!profile.email_verified) {
       return res.redirect(`${fe}/callback?error=email_not_verified`);
     }
 
-    let user = await prisma.user.findFirst({
-      where: { OR: [{ email: profile.email }, { providerId: profile.sub, provider: "GOOGLE" }] },
-    });
-
-    if (user) {
-      user = await prisma.user.update({
-        where: { id: user.id },
-        data:  {
-          provider: "GOOGLE",
-          providerId: profile.sub,
-          avatar: profile.picture,
-        },
+    const user = await withPrismaRetry(async (db) => {
+      let nextUser = await db.user.findFirst({
+        where: { OR: [{ email: profile.email }, { providerId: profile.sub, provider: "GOOGLE" }] },
       });
-    } else {
-      user = await prisma.$transaction(async (tx) => {
+
+      if (nextUser) {
+        return db.user.update({
+          where: { id: nextUser.id },
+          data:  {
+            provider: "GOOGLE",
+            providerId: profile.sub,
+            avatar: profile.picture,
+          },
+        });
+      }
+
+      return db.$transaction(async (tx) => {
         const created = await tx.user.create({
           data: {
             email:      profile.email,
-            username:   await deriveUniqueUsername(profile.given_name ?? profile.email.split("@")[0]),
+            username:   await deriveUniqueUsername(profile.given_name ?? profile.email.split("@")[0], tx),
             password:   null,
             provider:   "GOOGLE",
             providerId: profile.sub,
@@ -665,7 +660,7 @@ export const googleCallback = async (req: Request, res: Response) => {
         await ensureFreeSubscriptionForUser(tx, created.id);
         return created;
       });
-    }
+    });
 
     const oauthCode = await createOAuthCode(user.id);
     return res.redirect(`${fe}/callback?code=${oauthCode}`);
@@ -699,21 +694,23 @@ export const githubCallback = async (req: Request, res: Response) => {
     const tokens              = await exchangeGithubCode(code);
     const { user: gh, email } = await getGithubProfile(tokens.access_token);
 
-    let user = await prisma.user.findFirst({
-      where: { OR: [{ email }, { providerId: String(gh.id), provider: "GITHUB" }] },
-    });
-
-    if (user) {
-      user = await prisma.user.update({
-        where: { id: user.id },
-        data:  { provider: "GITHUB", providerId: String(gh.id), avatar: gh.avatar_url },
+    const user = await withPrismaRetry(async (db) => {
+      let nextUser = await db.user.findFirst({
+        where: { OR: [{ email }, { providerId: String(gh.id), provider: "GITHUB" }] },
       });
-    } else {
-      user = await prisma.$transaction(async (tx) => {
+
+      if (nextUser) {
+        return db.user.update({
+          where: { id: nextUser.id },
+          data:  { provider: "GITHUB", providerId: String(gh.id), avatar: gh.avatar_url },
+        });
+      }
+
+      return db.$transaction(async (tx) => {
         const created = await tx.user.create({
           data: {
             email,
-            username:   await deriveUniqueUsername(gh.login),
+            username:   await deriveUniqueUsername(gh.login, tx),
             password:   null,
             provider:   "GITHUB",
             providerId: String(gh.id),
@@ -723,7 +720,7 @@ export const githubCallback = async (req: Request, res: Response) => {
         await ensureFreeSubscriptionForUser(tx, created.id);
         return created;
       });
-    }
+    });
 
     const oauthCode = await createOAuthCode(user.id);
     return res.redirect(`${fe}/callback?code=${oauthCode}`);

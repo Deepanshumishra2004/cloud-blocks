@@ -55,7 +55,7 @@ function sign(payload: { userId: string; type: TokenType }, secret: string, ttlS
   const token = jwt.sign(
     { userId: payload.userId, type: payload.type, jti },
     secret,
-    { expiresIn: ttlSecs, jwtid: jti },
+    { expiresIn: ttlSecs },
   );
   return { token, jti, expiresAt: exp };
 }

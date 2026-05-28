@@ -14,8 +14,9 @@ const keyByUserOrIp = (req: Request, _res: unknown) => {
 // Shared Redis store factory. Each limiter gets its own prefix so different
 // limiter buckets don't collide.
 function makeStore(prefix: string) {
-  // In test mode skip Redis to keep unit tests offline-friendly.
-  if (isTest) return undefined;
+  // In local/test mode keep rate limits process-local so the API can boot
+  // cleanly without a separate Redis dependency.
+  if (isTest || !isProd) return undefined;
   return new RedisStore({
     prefix: `rl:${prefix}:`,
     // ioredis accepts variadic args; rate-limit-redis sends them through.
@@ -27,6 +28,9 @@ const baseConfig = {
   standardHeaders: "draft-7" as const,
   legacyHeaders: false,
   keyGenerator: keyByUserOrIp,
+  // Auth and API availability matter more than perfect enforcement when Redis
+  // is temporarily unavailable. Log the store failure, then fail open.
+  passOnStoreError: true,
 };
 
 // Auth: signup / signin / oauth callbacks — brute-force protection

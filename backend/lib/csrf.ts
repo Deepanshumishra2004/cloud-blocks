@@ -15,6 +15,7 @@
 import crypto from "crypto";
 import type { CookieOptions, Response } from "express";
 import { env, isProd } from "../config/env";
+import { getAuthCookieSecurity } from "./authCookiePolicy";
 
 export const CSRF_COOKIE_NAME = "cb_csrf";
 export const CSRF_HEADER_NAME = "x-csrf-token";
@@ -26,8 +27,7 @@ export function generateCsrfToken(): string {
 export function buildCsrfCookieOptions(): CookieOptions {
   return {
     httpOnly: false,                         // frontend JS must read this
-    secure: isProd,
-    sameSite: isProd ? "none" : "lax",
+    ...getAuthCookieSecurity(isProd),
     maxAge: 7 * 24 * 60 * 60 * 1000,
     path: "/",
     ...(env.AUTH_COOKIE_DOMAIN ? { domain: env.AUTH_COOKIE_DOMAIN } : {}),

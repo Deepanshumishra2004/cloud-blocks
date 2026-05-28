@@ -1,5 +1,5 @@
-// env.ts must be the FIRST import — it validates and exits on bad config
-// before any other module reads process.env.
+// env.ts must be the FIRST import so config validation runs before anything
+// else reads process.env.
 import { env } from "./config/env";
 import express from "express";
 import cors from "cors";
@@ -14,24 +14,23 @@ import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import { generalLimiter } from "./middleware/rateLimiters";
 import { csrfMiddleware } from "./middleware/csrfMiddleware";
 import { logger } from "./lib/logger";
-import { prisma } from "./lib/prisma";
+import { withPrismaRetry } from "./lib/prisma";
 import { redis } from "./lib/redis";
 import { deleteReplPod } from "./services/k8s.service";
 
 const app = express();
 
 // Trust the first proxy (NGINX ingress / load balancer) so req.ip and
-// rate-limit keys reflect the real client, not the LB.
+// rate-limit keys reflect the real client, not the load balancer.
 app.set("trust proxy", 1);
 
-// Stripe webhook must be mounted BEFORE express.json() — needs the raw body.
-// Also mounted before helmet/compression so headers don't interfere with signature verification.
+// Stripe webhook must be mounted before express.json() because it needs the
+// raw body for signature verification.
 app.use(`${API}${WEBHOOK}`,
   express.raw({ type: "application/json" }),
   handleStripeWebhook
 );
 
-// Per-request logger: assigns a request id, logs method/url/status/latency.
 app.use(pinoHttp({
   logger,
   genReqId: (req, res) => {
@@ -45,12 +44,11 @@ app.use(pinoHttp({
     if (res.statusCode >= 400) return "warn";
     return "info";
   },
-  // Don't log noisy health checks at info level
   autoLogging: { ignore: (req) => req.url === "/health" || req.url === "/ready" },
 }));
 
 app.use(helmet({
-  contentSecurityPolicy: false, // API is JSON-only; CSP belongs on the frontend
+  contentSecurityPolicy: false,
   crossOriginResourcePolicy: { policy: "cross-origin" },
 }));
 
@@ -63,12 +61,7 @@ app.use(cors({
 
 app.use(express.json({ limit: "1mb" }));
 
-// CSRF check runs before route handlers but after JSON parsing so we can read
-// the body length for logging if needed. Safe methods (GET/HEAD/OPTIONS) and
-// unauthenticated bootstrap endpoints are skipped inside the middleware.
 app.use(`${API}`, csrfMiddleware);
-
-// Broad ceiling on every API request. Per-route limiters add stricter caps where needed.
 app.use(`${API}`, generalLimiter, apiRoutes);
 
 app.get("/health", (_req, res) => {
@@ -78,7 +71,7 @@ app.get("/health", (_req, res) => {
 app.get("/ready", async (_req, res) => {
   try {
     await Promise.all([
-      prisma.$queryRaw`SELECT 1`,
+      withPrismaRetry((db) => db.$queryRaw`SELECT 1`),
       redis.ping(),
     ]);
     res.json({ status: "ok" });
@@ -88,14 +81,13 @@ app.get("/ready", async (_req, res) => {
   }
 });
 
-// 404 + global error handler — MUST be the last middleware in the chain.
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-// Crash-safe: log and let the process manager (K8s/PM2) restart on hard failure.
 process.on("unhandledRejection", (reason) => {
   logger.error({ err: reason }, "unhandledRejection");
 });
+
 process.on("uncaughtException", (err) => {
   logger.fatal({ err }, "uncaughtException");
   process.exit(1);
@@ -103,16 +95,27 @@ process.on("uncaughtException", (err) => {
 
 async function reconcileReplStates() {
   try {
-    const stale = await prisma.repl.findMany({
-      where: { status: "RUNNING" },
-      select: { id: true },
-    });
+    const stale = await withPrismaRetry((db) =>
+      db.repl.findMany({
+        where: { status: "RUNNING" },
+        select: { id: true },
+      })
+    );
+
     if (stale.length === 0) return;
-    await Promise.all(stale.map((r) => deleteReplPod(r.id).catch(() => {})));
-    await prisma.repl.updateMany({ where: { status: "RUNNING" }, data: { status: "STOPPED" } });
-    logger.info({ count: stale.length }, "reconciled stale RUNNING repls → STOPPED");
+
+    await Promise.all(stale.map((repl) => deleteReplPod(repl.id).catch(() => {})));
+
+    await withPrismaRetry((db) =>
+      db.repl.updateMany({
+        where: { status: "RUNNING" },
+        data: { status: "STOPPED" },
+      })
+    );
+
+    logger.info({ count: stale.length }, "reconciled stale RUNNING repls to STOPPED");
   } catch (err) {
-    logger.error({ err }, "reconcileReplStates failed — continuing startup");
+    logger.error({ err }, "reconcileReplStates failed, continuing startup");
   }
 }
 

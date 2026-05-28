@@ -50,6 +50,16 @@ const isAlreadyExistsError = (error: unknown): boolean => {
 
 const safeReplId = (replId: string) => replId.toLowerCase().replace(/[^a-z0-9-]/g, "-");
 
+const isPodReady = (pod: k8s.V1Pod | undefined): boolean => {
+  if (!pod?.status || pod.status.phase !== "Running") return false;
+
+  return (
+    pod.status.conditions?.some(
+      (condition) => condition.type === "Ready" && condition.status === "True",
+    ) ?? false
+  );
+};
+
 export const getReplRuntimeUrls = (replId: string) => {
   const cleanReplId = safeReplId(replId);
   const host = `repl-${cleanReplId}.${BASE_DOMAIN}`;
@@ -227,6 +237,8 @@ export const provisionReplRuntime = async (replId: string, type: string, userId:
     logger.info(`[k8s] ingress already exists for repl ${cleanReplId}`);
   }
 
+  await waitForPodReady(cleanReplId);
+
   return {
     replId: cleanReplId,
     host,
@@ -242,6 +254,37 @@ export const createReplPod = provisionReplRuntime;
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => (setTimeout as unknown as (fn: () => void, ms: number) => void)(r, ms));
+
+const waitForPodReady = async (cleanReplId: string, timeoutMs = 120_000): Promise<void> => {
+  const podName = `repl-${cleanReplId}`;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await coreApi.readNamespacedPod({
+        name: podName,
+        namespace: NAMESPACE,
+      });
+      const pod = response.body;
+
+      if (isPodReady(pod)) return;
+
+      const phase = pod.status?.phase;
+      if (phase === "Failed" || phase === "Succeeded") {
+        throw new Error(`Pod ${podName} exited during startup with phase ${phase}`);
+      }
+    } catch (error) {
+      const e = error as { statusCode?: number };
+      if (e.statusCode !== 404 && e.statusCode !== undefined) {
+        throw error;
+      }
+    }
+
+    await sleep(2_000);
+  }
+
+  throw new Error(`Timed out waiting for pod repl-${cleanReplId} to become ready`);
+};
 
 const waitForPodGone = async (cleanReplId: string, timeoutMs = 30_000): Promise<void> => {
   const deadline = Date.now() + timeoutMs;

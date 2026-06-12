@@ -4,9 +4,15 @@ import axios, {
   type InternalAxiosRequestConfig,
 } from "axios";
 import type { AuthUser } from "@/lib/authstore";
+import { REFRESH_PATH, resolveApiBaseUrl } from "@/lib/auth-endpoints";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+const API_BASE_URL = resolveApiBaseUrl({
+  isBrowser: typeof window !== "undefined",
+  nextPublicApiUrl: process.env.NEXT_PUBLIC_API_URL,
+  backendUrl: process.env.BACKEND_URL,
+});
 const API_TIMEOUT_MS = 12_000;
+const REPL_START_TIMEOUT_MS = 130_000;
 const AUTH_PAGES = ["/signin", "/signup", "/callback", "/forgot-password", "/reset-password"];
 const SIGNIN_ROUTE = "/signin";
 
@@ -17,12 +23,17 @@ const CSRF_HEADER = "X-CSRF-Token";
 // the public bootstrap endpoints). Anything not matched here will get one
 // transparent refresh-then-retry on 401.
 const REFRESH_BLACKLIST = [
-  "/api/v1/user/refresh",
+  REFRESH_PATH,
+  "/api/v1/user/me",
   "/api/v1/user/signin",
   "/api/v1/user/signup",
   "/api/v1/user/exchange",
   "/api/v1/user/forgot-password",
   "/api/v1/user/reset-password",
+];
+
+const REDIRECT_BLACKLIST = [
+  "/api/v1/user/me",
 ];
 
 const isBrowser = (): boolean => typeof window !== "undefined";
@@ -66,11 +77,7 @@ async function attemptRefresh(): Promise<boolean> {
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
     try {
-      await axios.post(
-        `${API_BASE_URL}/api/v1/user/refresh`,
-        {},
-        { withCredentials: true, timeout: API_TIMEOUT_MS },
-      );
+      await axios.post(`${API_BASE_URL}${REFRESH_PATH}`, {}, { withCredentials: true, timeout: API_TIMEOUT_MS });
       return true;
     } catch {
       return false;
@@ -88,6 +95,11 @@ function isRefreshableUrl(url?: string): boolean {
   return !REFRESH_BLACKLIST.some((p) => url.includes(p));
 }
 
+function shouldRedirectOnUnauthorized(url?: string): boolean {
+  if (!url) return true;
+  return !REDIRECT_BLACKLIST.some((p) => url.includes(p));
+}
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -102,7 +114,7 @@ api.interceptors.response.use(
       }
     }
 
-    if (status === 401 && isBrowser()) {
+    if (status === 401 && isBrowser() && shouldRedirectOnUnauthorized(original?.url)) {
       const onAuthPage = AUTH_PAGES.some((p) => window.location.pathname.startsWith(p));
       if (!onAuthPage) window.location.replace(SIGNIN_ROUTE);
     }
@@ -143,7 +155,7 @@ export type ReplStatus = "RUNNING" | "STOPPED" | "STARTING" | "ERROR";
 export type PlanName = "FREE" | "PRO" | "TEAMS";
 export type SubStatus = "ACTIVE" | "CANCELED" | "EXPIRED" | "PAST_DUE" | "TRIAL";
 export type BillingCycle = "MONTHLY" | "YEARLY";
-export type AiProvider = "GEMINI" | "OPENAI" | "ANTHROPIC" | "DEEPSEEK";
+export type AiProvider = "OPENROUTER" | "GEMINI" | "OPENAI" | "ANTHROPIC" | "DEEPSEEK";
 
 export interface Repl {
   id: string;
@@ -312,7 +324,10 @@ export async function deleteRepl(replId: string): Promise<void> {
 }
 
 export async function startRepl(replId: string): Promise<ReplRuntime> {
-  return await postData<ReplRuntime>(`/api/v1/repl/${replId}/start`);
+  const { data } = await api.post<ReplRuntime>(`/api/v1/repl/${replId}/start`, undefined, {
+    timeout: REPL_START_TIMEOUT_MS,
+  });
+  return data;
 }
 
 export async function stopRepl(replId: string): Promise<void> {
@@ -321,17 +336,17 @@ export async function stopRepl(replId: string): Promise<void> {
 
 export async function generateReplCode(
   replId: string,
-  payload: { prompt: string; filePath: string; currentContent: string },
+  payload: { prompt: string; filePath: string; currentContent: string; model?: string },
 ): Promise<AiGenerateResult> {
   return await postData<AiGenerateResult, typeof payload>(`/api/v1/repl/${replId}/ai/generate`, payload);
 }
 
 export async function streamReplCode(
   replId: string,
-  payload: { prompt: string; filePath: string; currentContent: string; history?: Array<{ role: "user" | "assistant"; content: string }> },
+  payload: { prompt: string; filePath: string; currentContent: string; model?: string; history?: Array<{ role: "user" | "assistant"; content: string }> },
   onChunk: (chunk: string) => void,
   signal?: AbortSignal,
-): Promise<{ provider: string; credentialName: string }> {
+): Promise<{ provider: string; credentialName: string; model?: string | null }> {
   const csrf = readCookie(CSRF_COOKIE);
   const response = await fetch(`${API_BASE_URL}/api/v1/repl/${replId}/ai/stream`, {
     method: "POST",
@@ -363,10 +378,10 @@ export async function streamReplCode(
     for (const line of lines) {
       if (!line.startsWith("data: ")) continue;
       const json = line.slice(6).trim();
-      const parsed = JSON.parse(json) as { chunk?: string; done?: boolean; provider?: string; credentialName?: string; error?: string };
+      const parsed = JSON.parse(json) as { chunk?: string; done?: boolean; provider?: string; credentialName?: string; model?: string | null; error?: string };
       if (parsed.error) throw new Error(parsed.error);
       if (parsed.chunk) onChunk(parsed.chunk);
-      if (parsed.done) return { provider: parsed.provider ?? "", credentialName: parsed.credentialName ?? "" };
+      if (parsed.done) return { provider: parsed.provider ?? "", credentialName: parsed.credentialName ?? "", model: parsed.model };
     }
   }
 

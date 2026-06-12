@@ -17,7 +17,7 @@ spec:
       containers:
         - name: backend
           image: deepanshumishra2004/backend:latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3001
           envFrom:

@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "dev:frontend": "cd frontend && bun run dev",
+    "dev:backend": "cd backend && bun run dev"
+  }
+}

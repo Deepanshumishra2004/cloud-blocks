@@ -10,8 +10,8 @@ import { AtIcon, EyeIcon, EyeOffIcon, LockIcon, MailIcon, ProviderIcon } from ".
 
 export function SettingsCard({ title, description, children }: { title: string; description: string; children: ReactNode }) {
   return (
-    <section className="bg-[var(--cb-bg-surface)] border border-cb rounded-xl overflow-hidden">
-      <div className="px-5 py-4 border-b border-cb">
+    <section className="dashboard-panel overflow-hidden">
+      <div className="px-5 py-4 border-b border-cb bg-[color-mix(in_srgb,var(--cb-bg-elevated)_38%,transparent)]">
         <h3 className="text-sm font-semibold text-cb-primary">{title}</h3>
         <p className="text-xs text-cb-muted mt-0.5">{description}</p>
       </div>
@@ -179,7 +179,7 @@ export function AuthProviderSection({ provider }: { provider: AuthUser["provider
 
   return (
     <SettingsCard title="Authentication" description="How you sign in to CloudBlocks.">
-      <div className="flex items-center gap-3 p-3 bg-[var(--cb-bg-elevated)] border border-cb rounded-lg">
+      <div className="flex items-center gap-3 p-3 bg-cb-elevated border border-cb rounded-lg">
         <ProviderIcon provider={provider} />
         <div>
           <p className="text-sm font-medium text-cb-primary">Signed in with {providerLabel}</p>
@@ -191,6 +191,7 @@ export function AuthProviderSection({ provider }: { provider: AuthUser["provider
 }
 
 const PROVIDER_LABELS: Record<AiProvider, string> = {
+  OPENROUTER: "OpenRouter",
   GEMINI: "Gemini",
   OPENAI: "OpenAI",
   ANTHROPIC: "Anthropic",
@@ -239,10 +240,11 @@ export function AiCredentialsSection({
               value={form.provider}
               onChange={(event) => onFormChange("provider", event.target.value)}
             >
+              <option value="OPENROUTER">OpenRouter</option>
               <option value="GEMINI">Gemini</option>
-              <option value="OPENAI" disabled>OpenAI (coming soon)</option>
-              <option value="ANTHROPIC" disabled>Anthropic (coming soon)</option>
-              <option value="DEEPSEEK" disabled>DeepSeek (coming soon)</option>
+              <option value="OPENAI">OpenAI</option>
+              <option value="ANTHROPIC">Anthropic</option>
+              <option value="DEEPSEEK">DeepSeek</option>
             </Select>
           </FormField>
 
@@ -299,7 +301,7 @@ export function AiCredentialsSection({
                 return (
                   <div
                     key={credential.id}
-                    className="rounded-lg border border-cb bg-[var(--cb-bg-elevated)] px-4 py-3"
+                    className="rounded-lg border border-cb bg-cb-elevated px-4 py-3 shadow-cb-sm"
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="space-y-1">
@@ -371,7 +373,7 @@ export function AiCredentialsSection({
 
 export function DangerZone({ onDelete }: { onDelete: () => void }) {
   return (
-    <div className="border border-[var(--danger-border)] rounded-xl overflow-hidden">
+    <div className="border border-[var(--danger-border)] rounded-lg overflow-hidden">
       <div className="px-5 py-4 border-b border-[var(--danger-border)] bg-[var(--danger-subtle)]">
         <h3 className="text-sm font-semibold text-[var(--danger)]">Danger Zone</h3>
         <p className="text-xs text-cb-secondary mt-0.5">Irreversible actions. Proceed with caution.</p>

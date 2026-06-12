@@ -48,6 +48,8 @@ const EnvSchema = z.object({
   // ── Kubernetes / Repl runtime ────────────────────────────────
   REPL_NAMESPACE: z.string().default("repls"),
   REPL_IMAGE: z.string().default("deepanshumishra2004/execution_layer:latest"),
+  REPL_IMAGE_PULL_POLICY: z.enum(["Always", "IfNotPresent", "Never"]).default("Always"),
+  K8S_SKIP_TLS_VERIFY: z.coerce.boolean().default(false),
   REPL_BASE_DOMAIN: z.string().default("127.0.0.1.nip.io"),
   REPL_RUNTIME_SECRET: z.string().default("repl-runtime-secrets"),
   REPL_PUBLIC_PROTOCOL: z.enum(["http", "https"]).optional(),

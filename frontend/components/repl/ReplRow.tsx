@@ -30,21 +30,19 @@ export function ReplRow({
 }) {
   const isRunning = repl.status === "RUNNING";
 
-  
-
   return (
     <div
       className={cn(
-        "flex items-center gap-4 px-4 py-3.5 group hover:bg-[var(--cb-bg-hover)] transition-colors",
+        "group flex items-center gap-4 px-5 py-4 transition-colors hover:bg-cb-hover",
         !isLast && "border-b border-cb"
       )}
     >
-      <div className="w-9 h-9 shrink-0 rounded-lg bg-[var(--cb-bg-elevated)] border border-cb flex items-center justify-center text-base group-hover:border-cb-strong transition-colors text-cb-muted">
+      <div className="pop-icon h-10 w-10 shrink-0 text-base transition-colors group-hover:border-[var(--brand-border)]">
         <RuntimeIcon type={repl.type} />
       </div>
 
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-cb-primary truncate">{repl.name}</p>
+        <p className="truncate text-sm font-semibold text-cb-primary">{repl.name}</p>
         <p className="text-2xs font-mono text-cb-muted mt-0.5">{repl.type}</p>
       </div>
 
@@ -56,7 +54,7 @@ export function ReplRow({
         variant={isRunning ? "primary" : "secondary"}
         size="sm"
         onClick={isRunning ? onOpen : onStart}
-        className="shrink-0 min-w-[60px]"
+        className="min-w-[82px] shrink-0"
       >
         {isRunning ? "Open" : "Start"}
       </Button>
@@ -78,7 +76,7 @@ export function ReplRow({
           </DropdownMenuItem>
           {isRunning && (
             <DropdownMenuItem icon={<StopIcon />} onSelect={onStop}>
-              Stop
+              Stop Pod
             </DropdownMenuItem>
           )}
           <DropdownMenuSeparator />

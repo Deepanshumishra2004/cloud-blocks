@@ -1,21 +1,19 @@
 // /app/layout.tsx
 import type { Metadata } from "next";
-import { IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 import { AuthProvider } from "@/components/auth/AuthProvider";
 import { ThemeProvider } from "@/components/layout/ThemeProvider";
 import { ToastProvider } from "@/components/ui/Toast";
 import "@/app/globals.css";
 
-const ibmPlexSans = IBM_Plex_Sans({
+const geistSans = Geist({
   subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
   variable: "--font-sans",
   display: "swap",
 });
 
-const ibmPlexMono = IBM_Plex_Mono({
+const geistMono = Geist_Mono({
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
   variable: "--font-mono",
   display: "swap",
 });
@@ -41,14 +39,32 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const themeScript = `
+    (() => {
+      try {
+        const stored = localStorage.getItem("cb-theme");
+        const theme = stored === "light" || stored === "dark" ? stored : "dark";
+        document.documentElement.classList.remove("light", "dark");
+        document.documentElement.classList.add(theme);
+        document.documentElement.style.colorScheme = theme;
+      } catch {
+        document.documentElement.classList.add("dark");
+        document.documentElement.style.colorScheme = "dark";
+      }
+    })();
+  `;
+
   return (
     <html
       lang="en"
-      className="dark"
+      className={`${geistSans.variable} ${geistMono.variable} dark`}
       suppressHydrationWarning
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
       <body
-        className={`${ibmPlexSans.variable} ${ibmPlexMono.variable} font-sans antialiased`}
+        className="font-sans antialiased"
       >
         <ThemeProvider defaultTheme="dark">
           <AuthProvider>

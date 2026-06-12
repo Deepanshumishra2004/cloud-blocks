@@ -26,8 +26,7 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(
       ref={ref}
       className={cn(
         !bare && [
-          "bg-cb-surface border border-cb rounded-lg",
-          "shadow-cb-sm overflow-hidden",
+          "dashboard-panel overflow-hidden",
         ],
         className
       )}
@@ -52,7 +51,7 @@ const CardHeader = React.forwardRef<HTMLDivElement, CardHeaderProps>(
       ref={ref}
       className={cn(
         "flex items-center justify-between gap-3",
-        "px-5 py-4 border-b border-cb",
+        "px-5 py-4 border-b border-cb bg-[color-mix(in_srgb,var(--cb-bg-elevated)_38%,transparent)]",
         className
       )}
       {...props}
@@ -125,8 +124,7 @@ function StatCard({ label, value, change, trend = "neutral", icon, className, ..
   return (
     <div
       className={cn(
-        "bg-cb-surface border border-cb rounded-lg p-5",
-        "shadow-cb-sm",
+        "dashboard-panel p-5",
         className
       )}
       {...props}
@@ -139,7 +137,7 @@ function StatCard({ label, value, change, trend = "neutral", icon, className, ..
           <span className="text-cb-muted shrink-0">{icon}</span>
         )}
       </div>
-      <p className="font-mono font-bold text-2xl text-cb-primary tracking-tight leading-none mb-1">
+      <p className="font-mono font-bold text-2xl text-cb-primary leading-none mb-1">
         {value}
       </p>
       {change && (

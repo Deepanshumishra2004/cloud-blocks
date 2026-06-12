@@ -88,7 +88,7 @@ function TabsTrigger({ value, icon, badge, className, children, ...props }: Tabs
         "flex items-center gap-2 px-4 py-2.5 shrink-0",
         "text-sm font-medium border-b-2 -mb-px",
         "transition-colors duration-100",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-1",
         isActive
           ? "border-brand text-cb-primary"
           : "border-transparent text-cb-muted hover:text-cb-secondary hover:border-cb-strong",

@@ -2,6 +2,7 @@
 import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { logger } from "../lib/logger";
+import { getOrCreateActiveSubscription, getUserReplUsage } from "../services/plan-limits.service";
 
 /* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    GET ALL PLANS  GET /api/v1/plan/all
@@ -99,33 +100,7 @@ export const getUserSubscription = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId as string;
 
-    let sub = await prisma.subscription.findUnique({
-      where: { userId },
-      include: { plan: true },
-    });
-
-    if (!sub) {
-      const freePlan = await prisma.plan.findFirst({
-        where: { name: "FREE" },
-        orderBy: { billingCycle: "asc" },
-      });
-
-      if (freePlan) {
-        sub = await prisma.subscription.upsert({
-          where: { userId },
-          update: {},
-          create: {
-            userId,
-            planId: freePlan.id,
-            stripeSubscriptionId: `free_${userId}`,
-            status: "ACTIVE",
-            currentPeriodStart: new Date(),
-            currentPeriodEnd: new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
-          },
-          include: { plan: true },
-        });
-      }
-    }
+    const sub = await getOrCreateActiveSubscription(userId);
 
     if (!sub) return res.status(503).json({ message: "Free plan is not configured" });
 
@@ -145,20 +120,7 @@ export const getUserUsage = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId;
 
-    const [replCount, sub] = await Promise.all([
-      prisma.repl.count({ where: { userId } }),
-      prisma.subscription.findUnique({
-        where:  { userId },
-        select: {
-          plan: {
-            select: { maxRepls: true, maxStorageMB: true },
-          },
-        },
-      }),
-    ]);
-
-    const maxRepls     = sub?.plan?.maxRepls     ?? 3;    // free tier defaults
-    const maxStorageMB = sub?.plan?.maxStorageMB ?? 500;
+    const { replCount, subscription, maxRepls, maxStorageMB } = await getUserReplUsage(userId);
 
     // Storage and compute are placeholders â€” wire up real metrics
     // once your sandbox layer tracks them (e.g. via K8s resource usage API)
@@ -166,7 +128,7 @@ export const getUserUsage = async (req: Request, res: Response) => {
       usage: {
         repls:   { used: replCount,  max: maxRepls     },
         storage: { usedMb: 0,        maxMb: maxStorageMB },
-        compute: { usedHrs: 0,       maxHrs: sub ? 100 : 10 },
+        compute: { usedHrs: 0,       maxHrs: subscription ? 100 : 10 },
       },
     });
   } catch (err) {

@@ -18,15 +18,20 @@ import {
 const PROVIDERS: {
   id: AiProvider;
   name: string;
-  model: string;
   color: string;
   bg: string;
   docsUrl: string;
 }[] = [
   {
+    id: "OPENROUTER",
+    name: "OpenRouter",
+    color: "text-sky-400",
+    bg: "bg-sky-500/10 border-sky-500/20",
+    docsUrl: "https://openrouter.ai/keys",
+  },
+  {
     id: "GEMINI",
     name: "Gemini",
-    model: "gemini-2.5-flash",
     color: "text-blue-400",
     bg: "bg-blue-500/10 border-blue-500/20",
     docsUrl: "https://aistudio.google.com/apikey",
@@ -34,7 +39,6 @@ const PROVIDERS: {
   {
     id: "OPENAI",
     name: "OpenAI",
-    model: "gpt-4o",
     color: "text-emerald-400",
     bg: "bg-emerald-500/10 border-emerald-500/20",
     docsUrl: "https://platform.openai.com/api-keys",
@@ -42,7 +46,6 @@ const PROVIDERS: {
   {
     id: "ANTHROPIC",
     name: "Anthropic",
-    model: "claude-sonnet-4-6",
     color: "text-orange-400",
     bg: "bg-orange-500/10 border-orange-500/20",
     docsUrl: "https://console.anthropic.com/settings/keys",
@@ -50,7 +53,6 @@ const PROVIDERS: {
   {
     id: "DEEPSEEK",
     name: "DeepSeek",
-    model: "deepseek-chat",
     color: "text-violet-400",
     bg: "bg-violet-500/10 border-violet-500/20",
     docsUrl: "https://platform.deepseek.com/api_keys",
@@ -130,7 +132,11 @@ export default function KeysPage() {
     if (!form.name.trim() || !form.apiKey.trim()) return;
     setSaving(true);
     try {
-      const created = await createAiCredential({ provider, name: form.name.trim(), apiKey: form.apiKey.trim() });
+      const created = await createAiCredential({
+        provider,
+        name: form.name.trim(),
+        apiKey: form.apiKey.trim(),
+      });
       setCredentials((prev) => [created, ...prev]);
       setAddingFor(null);
       setForm({ name: "", apiKey: "" });
@@ -172,15 +178,15 @@ export default function KeysPage() {
   const activeId = credentials.find((c) => c.isActive)?.id ?? null;
 
   return (
-    <div className="max-w-4xl mx-auto flex flex-col gap-6">
+    <div className="dashboard-shell max-w-5xl flex flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-cb-primary tracking-tight">AI Provider Keys</h1>
-        <p className="text-sm text-cb-secondary mt-1">Add API keys for each provider. Set one as active to use it in the editor.</p>
+        <h1 className="text-xl font-semibold text-cb-primary">API Key Management</h1>
+        <p className="text-sm text-cb-secondary mt-1">Use OpenRouter as the recommended AI gateway, save keys securely, and choose models inside each REPL.</p>
       </div>
 
       {loading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {[0, 1, 2, 3].map((i) => (
+          {[0, 1, 2, 3, 4].map((i) => (
             <div key={i} className="h-40 rounded-xl bg-[var(--cb-bg-surface)] border border-cb animate-pulse" />
           ))}
         </div>
@@ -194,8 +200,8 @@ export default function KeysPage() {
             return (
               <div
                 key={provider.id}
-                className={`rounded-xl border bg-[var(--cb-bg-surface)] flex flex-col overflow-hidden transition-all ${
-                  hasKeys ? "border-cb" : "border-cb border-dashed"
+                className={`dashboard-panel flex flex-col overflow-hidden transition-all hover:-translate-y-1 hover:border-[var(--brand-border)] hover:shadow-cb-md ${
+                  hasKeys ? "" : "border-dashed"
                 }`}
               >
                 {/* Card header */}
@@ -215,7 +221,7 @@ export default function KeysPage() {
                         </span>
                       )}
                     </div>
-                    <p className="text-2xs text-cb-muted mt-0.5 font-mono">{provider.model}</p>
+                    <p className="text-2xs text-cb-muted mt-0.5">Provider key vault</p>
                   </div>
                   <a
                     href={provider.docsUrl}
@@ -242,7 +248,7 @@ export default function KeysPage() {
                           className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors ${
                             isActive
                               ? "bg-brand/5 border-brand/25"
-                              : "bg-[var(--cb-bg-elevated)] border-cb"
+                              : "bg-cb-elevated border-cb"
                           }`}
                         >
                           <KeyIcon />
@@ -279,7 +285,7 @@ export default function KeysPage() {
 
                 {/* Add key form (inline, open state) */}
                 {isOpen && (
-                  <div className="px-4 pb-4 flex flex-col gap-2 border-t border-cb pt-3">
+                  <div className="px-4 pb-4 flex flex-col gap-2 border-t border-cb bg-[color-mix(in_srgb,var(--cb-bg-elevated)_34%,transparent)] pt-3">
                     <p className="text-2xs text-cb-muted font-medium uppercase tracking-wide">New key</p>
                     <input
                       autoFocus
@@ -287,7 +293,7 @@ export default function KeysPage() {
                       placeholder="Key name (e.g. Personal)"
                       value={form.name}
                       onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                      className="w-full text-xs bg-[var(--cb-bg-elevated)] border border-cb rounded-md px-3 py-2 text-cb-primary placeholder:text-cb-muted outline-none focus:border-brand transition-colors"
+                      className="w-full text-xs bg-[var(--cb-input-bg)] border border-cb rounded-md px-3 py-2 text-cb-primary placeholder:text-cb-muted outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-subtle)] transition-colors"
                     />
                     <input
                       type="password"
@@ -295,7 +301,7 @@ export default function KeysPage() {
                       value={form.apiKey}
                       onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
                       onKeyDown={(e) => { if (e.key === "Enter") saveKey(provider.id); if (e.key === "Escape") cancelAdd(); }}
-                      className="w-full text-xs bg-[var(--cb-bg-elevated)] border border-cb rounded-md px-3 py-2 text-cb-primary placeholder:text-cb-muted outline-none focus:border-brand transition-colors font-mono"
+                      className="w-full text-xs bg-[var(--cb-input-bg)] border border-cb rounded-md px-3 py-2 text-cb-primary placeholder:text-cb-muted outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-subtle)] transition-colors font-mono"
                     />
                     <div className="flex gap-2 pt-1">
                       <Button variant="primary" size="sm" onClick={() => saveKey(provider.id)} loading={saving} disabled={!form.name.trim() || !form.apiKey.trim()} className="flex-1">
@@ -316,7 +322,7 @@ export default function KeysPage() {
                       className={`w-full flex items-center justify-center gap-1.5 rounded-lg border py-2 text-xs transition-colors ${
                         hasKeys
                           ? "border-cb text-cb-muted hover:text-cb-secondary hover:border-cb-hover"
-                          : `border-dashed border-cb text-cb-muted hover:${provider.color} hover:border-current`
+                          : "border-dashed border-cb text-cb-muted hover:text-cb-secondary hover:border-cb-hover"
                       }`}
                     >
                       <PlusIcon />
@@ -332,7 +338,7 @@ export default function KeysPage() {
 
       {/* Active key indicator */}
       {activeId && (
-        <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-brand/5 border border-brand/20 text-xs text-cb-secondary">
+        <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-[var(--brand-subtle)] border border-[var(--brand-border)] text-xs text-cb-secondary shadow-cb-sm">
           <span className="w-1.5 h-1.5 rounded-full bg-brand shrink-0" />
           Active key:&nbsp;
           <span className="font-medium text-cb-primary">

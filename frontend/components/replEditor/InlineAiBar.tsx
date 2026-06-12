@@ -13,11 +13,13 @@ export type AiMessage =
 type Props = {
   openFile: string | null;
   activeCredential: AiCredential | null;
+  model: string;
   mode: "auto" | "ask";
   messages: AiMessage[];
   generating: boolean;
   streamingText: string | null;
   hasPending: boolean;
+  onModelChange: (model: string) => void;
   onModeChange: (m: "auto" | "ask") => void;
   onSend: (prompt: string) => void;
   onAccept: () => void;
@@ -194,11 +196,13 @@ function StreamingMessage({ text }: { text: string }) {
 export function InlineAiBar({
   openFile,
   activeCredential,
+  model,
   mode,
   messages,
   generating,
   streamingText,
   hasPending,
+  onModelChange,
   onModeChange,
   onSend,
   onAccept,
@@ -215,6 +219,13 @@ export function InlineAiBar({
       historyRef.current.scrollTop = historyRef.current.scrollHeight;
     }
   }, [messages, streamingText]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 128)}px`;
+  }, [input]);
 
   function handleSend() {
     const trimmed = input.trim();
@@ -240,7 +251,7 @@ export function InlineAiBar({
   const hasHistory = messages.length > 0;
 
   const placeholder = !activeCredential
-    ? "Add an AI key in Settings…"
+    ? "Add an AI key in API Key Management..."
     : !openFile
       ? "Open a file to start editing…"
       : generating
@@ -251,7 +262,7 @@ export function InlineAiBar({
     <div className="flex flex-col h-full bg-[#0d0d0f] overflow-hidden">
 
       {/* ── Header bar ── */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-white/6 shrink-0">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 border-b border-white/6 shrink-0">
         <div className="flex-1 min-w-0">
           {openFile ? (
             <div className="flex items-center gap-1.5">
@@ -272,15 +283,25 @@ export function InlineAiBar({
           {(["auto", "ask"] as const).map((m) => (
             <button
               key={m}
+              disabled={generating || hasPending}
               onClick={() => onModeChange(m)}
               className={`px-2 py-0.5 capitalize transition-colors ${
                 mode === m ? "bg-white/12 text-white/80" : "text-white/30 hover:text-white/55"
-              }`}
+              } disabled:cursor-not-allowed disabled:opacity-40`}
             >
               {m}
             </button>
           ))}
         </div>
+
+        <input
+          value={model}
+          onChange={(event) => onModelChange(event.target.value)}
+          disabled={!activeCredential || generating || hasPending}
+          placeholder="model"
+          title="AI model"
+          className="h-6 w-36 rounded-md border border-white/10 bg-white/5 px-2 text-2xs font-mono text-white/70 outline-none placeholder:text-white/25 focus:border-white/20 disabled:cursor-not-allowed disabled:opacity-40"
+        />
 
         {!activeCredential && (
           <button
@@ -358,7 +379,6 @@ export function InlineAiBar({
             disabled={disabled}
             rows={1}
             className="flex-1 resize-none bg-transparent text-xs text-white/85 placeholder:text-white/25 outline-none disabled:opacity-40 leading-5 max-h-32 overflow-y-auto"
-            style={{ fieldSizing: "content" } as React.CSSProperties}
           />
           <button
             onClick={handleSend}

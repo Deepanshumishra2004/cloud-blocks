@@ -19,10 +19,11 @@ export function ThemeToggle({ className }: ThemeToggleProps) {
       className={cn(
         "relative flex items-center gap-1.5",
         "h-8 w-[62px] px-1 rounded-full border",
-        "bg-cb-elevated border-cb",
-        "hover:border-cb-strong",
+        "bg-cb-elevated border-cb text-cb-muted",
+        "hover:border-cb-strong hover:text-cb-primary",
+        "shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_10px_24px_color-mix(in_srgb,var(--brand)_8%,transparent)]",
         "transition-colors duration-150",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]",
         className
       )}
     >
@@ -45,7 +46,7 @@ export function ThemeToggle({ className }: ThemeToggleProps) {
         className={cn(
           "absolute top-1/2 -translate-y-1/2",
           "w-6 h-6 rounded-full",
-          "bg-cb-surface border border-cb shadow-cb-sm",
+          "bg-cb-surface border border-cb shadow-[0_8px_20px_rgba(0,0,0,0.18)]",
           "transition-transform duration-200 ease-in-out",
           isDark ? "translate-x-0" : "translate-x-[30px]"
         )}

@@ -47,6 +47,7 @@ enum Provider {
 }
 
 enum AiProvider {
+  OPENROUTER
   GEMINI
   OPENAI
   ANTHROPIC

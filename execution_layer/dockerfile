@@ -1,20 +1,16 @@
-FROM oven/bun:1
+FROM deepanshumishra2004/execution_layer:latest
 
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y awscli python3 make g++ \
+  && apt-get install -y --no-install-recommends nodejs python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /workspace \
-  && useradd -m -s /bin/bash sandbox \
-  && chown sandbox:sandbox /workspace
+COPY ws-server/package.json ws-server/bun.lock ./ws-server/
+RUN cd ws-server && bun install --frozen-lockfile
 
-COPY /ws-server/package.json ./ws-server/
-RUN cd ws-server && bun install
-
-COPY /ws-server ./ws-server
-COPY main.sh .
+COPY ws-server ./ws-server
+COPY main.sh ./
 
 RUN chmod +x main.sh \
   && chmod 700 /app

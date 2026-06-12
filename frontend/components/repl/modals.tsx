@@ -46,7 +46,7 @@ export function CreateReplModal({
                 className={cn(
                   "flex flex-col items-center gap-1.5 p-3 rounded-lg border text-center",
                   "transition-all duration-100 text-xs font-medium",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]",
                   form.type === runtime.type
                     ? "border-[var(--brand)] bg-[var(--brand-subtle)] text-cb-primary"
                     : "border-cb text-cb-secondary hover:border-cb-strong hover:bg-[var(--cb-bg-hover)]"

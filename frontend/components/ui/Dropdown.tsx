@@ -125,7 +125,7 @@ function DropdownMenuItem({
         "w-full flex items-center gap-2 px-3 py-2",
         "text-sm rounded-md border border-transparent",
         "transition-colors duration-100 cursor-pointer",
-        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]",
         variant === "default"
           ? "text-cb-secondary hover:bg-cb-hover hover:text-cb-primary"
           : "text-(--danger) hover:bg-(--danger-subtle) hover:border-(--danger-border)",

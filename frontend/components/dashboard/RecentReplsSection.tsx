@@ -94,7 +94,7 @@ function DashboardReplRow({
         className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
         onClick={isRunning ? onOpen : onStart}
       >
-        {isRunning ? "Open" : "Start"}
+        {isRunning ? "Open" : "Start Pod"}
       </Button>
     </div>
   );

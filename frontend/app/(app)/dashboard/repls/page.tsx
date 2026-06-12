@@ -32,11 +32,15 @@ function ReplsPageInner() {
   useEffect(() => {
     if (searchParams.get("new") !== "1") return;
 
-    setShowCreate(true);
     const requestedType = searchParams.get("type");
-    if (!isReplType(requestedType)) return;
+    const timer = window.setTimeout(() => {
+      setShowCreate(true);
+      if (isReplType(requestedType)) {
+        setNewForm((prev) => ({ ...prev, type: requestedType }));
+      }
+    }, 0);
 
-    setNewForm((prev) => ({ ...prev, type: requestedType }));
+    return () => window.clearTimeout(timer);
   }, [searchParams]);
 
   const filteredRepls = useMemo(() => {
@@ -45,6 +49,9 @@ function ReplsPageInner() {
       (repl) => repl.name.toLowerCase().includes(query) || repl.type.toLowerCase().includes(query)
     );
   }, [repls, search]);
+
+  const runningCount = repls.filter((repl) => repl.status === "RUNNING").length;
+  const stoppedCount = repls.filter((repl) => repl.status === "STOPPED").length;
 
   const resetCreate = () => {
     setShowCreate(false);
@@ -59,8 +66,14 @@ function ReplsPageInner() {
         name: sanitizeReplName(newForm.name.trim()),
         type: newForm.type,
       });
-      toast.success("Repl created", `${repl.name} is ready.`);
       resetCreate();
+      try {
+        await startRepl(repl.id);
+        toast.success("Repl created", `${repl.name} pod is starting. Run code from the editor when you are ready.`);
+      } catch (startError: unknown) {
+        const message = startError instanceof Error ? startError.message : "Open it later and start the pod manually.";
+        toast.error("Repl created, pod failed to start", message);
+      }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Please try again.";
       toast.error("Failed to create", message);
@@ -99,26 +112,48 @@ function ReplsPageInner() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto flex flex-col gap-6">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-semibold text-cb-primary tracking-tight">My Repls</h1>
-          <p className="text-sm text-cb-secondary mt-0.5">
-            {loading ? "Loading..." : `${repls.length} repl${repls.length !== 1 ? "s" : ""}`}
-          </p>
+    <div className="dashboard-shell flex flex-col gap-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <button className="dashboard-button-tab dashboard-button-tab-active" type="button">
+            <FolderIcon />
+            Projects
+          </button>
+          <button className="dashboard-button-tab" type="button">
+            <PulseIcon />
+            Activity
+          </button>
         </div>
-        <Button variant="primary" size="sm" leftIcon={<PlusIcon />} onClick={() => setShowCreate(true)}>
-          New Repl
+        <Button variant="primary" size="md" leftIcon={<PlusIcon />} onClick={() => setShowCreate(true)}>
+          New repl
         </Button>
       </div>
 
-      <Input
-        type="search"
-        placeholder="Search by name or type..."
-        value={search}
-        onChange={(event) => setSearch(event.target.value)}
-        leftIcon={<SearchIcon />}
-      />
+      <section className="dashboard-panel-strong p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h1 className="text-xl font-bold text-cb-primary">Repls</h1>
+            <p className="mt-1 text-sm text-cb-secondary">
+              {loading ? "Loading workspaces..." : `${repls.length} total / ${runningCount} running / ${stoppedCount} stopped`}
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-right">
+            <Metric label="Total" value={repls.length} />
+            <Metric label="Running" value={runningCount} />
+            <Metric label="Stopped" value={stoppedCount} />
+          </div>
+        </div>
+
+        <div className="mt-5">
+          <Input
+            type="search"
+            placeholder="Search by name or type..."
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            leftIcon={<SearchIcon />}
+          />
+        </div>
+      </section>
 
       {loading ? (
         <div className="flex flex-col gap-2">{[0, 1, 2, 3].map((i) => <Skeleton key={i} height={72} />)}</div>
@@ -131,7 +166,7 @@ function ReplsPageInner() {
           <EmptyState onNew={() => setShowCreate(true)} />
         )
       ) : (
-        <div className="border border-cb rounded-xl overflow-hidden bg-[var(--cb-bg-surface)]">
+        <div className="dashboard-panel overflow-hidden">
           {filteredRepls.map((repl, index) => (
             <ReplRow
               key={repl.id}
@@ -142,7 +177,7 @@ function ReplsPageInner() {
                 void (async () => {
                   try {
                     await startRepl(repl.id);
-                    toast.info("Starting", `${repl.name} is warming up.`);
+                    toast.info("Starting pod", `${repl.name} is warming up.`);
                   } catch (error: unknown) {
                     const message = error instanceof Error ? error.message : "Please try again.";
                     toast.error("Failed to start", message);
@@ -151,7 +186,7 @@ function ReplsPageInner() {
               }}
               onStop={() => {
                 void stopRepl(repl.id);
-                toast.success("Stopped", repl.name);
+                toast.success("Pod stopped", repl.name);
               }}
               onRename={() => {
                 setRenameTarget({ id: repl.id, name: repl.name });
@@ -195,6 +230,23 @@ function ReplsPageInner() {
       />
     </div>
   );
+}
+
+function Metric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="dashboard-metric">
+      <p className="text-lg font-bold text-cb-primary">{value}</p>
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-cb-muted">{label}</p>
+    </div>
+  );
+}
+
+function FolderIcon() {
+  return <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M1.5 4.5h5l1.2 1.4h6.8v6.6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" /><path d="M1.5 4.5V3.2a1 1 0 0 1 1-1h3.2l1.1 1.3h6.7a1 1 0 0 1 1 1v1.4" /></svg>;
+}
+
+function PulseIcon() {
+  return <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M1.5 8h3l1.2-2.5L8 11l2.2-8 1.4 5h2.9" /></svg>;
 }
 
 export default function ReplsPage() {

@@ -26,7 +26,7 @@ export function PlanGrid({
     <div>
       <div className="mb-4 flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-cb-primary">Plans</h2>
-        <div className="inline-flex rounded-lg border border-cb bg-[var(--cb-bg-surface)] p-0.5">
+        <div className="inline-flex rounded-lg border border-cb bg-cb-elevated p-0.5 shadow-cb-sm">
           <button
             type="button"
             onClick={() => onBillingCycleChange("MONTHLY")}
@@ -75,12 +75,12 @@ export function PlanGrid({
             <div
               key={plan.id}
               className={cn(
-                "relative flex flex-col gap-4 p-5 rounded-xl border bg-[var(--cb-bg-surface)]",
-                plan.highlight ? "border-[var(--brand)] shadow-[0_0_0_1px_var(--brand)]" : "border-cb"
+              "relative flex flex-col gap-4 p-5 rounded-lg border bg-[var(--cb-bg-surface)] shadow-cb-sm transition-all hover:-translate-y-1 hover:shadow-cb-md",
+              plan.highlight ? "border-[var(--brand)] shadow-[0_0_0_1px_var(--brand),0_24px_70px_color-mix(in_srgb,var(--brand)_18%,transparent)]" : "border-cb"
               )}
             >
               {plan.highlight && (
-                <span className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-brand text-[#111] text-2xs font-bold whitespace-nowrap">
+                <span className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-[linear-gradient(135deg,var(--brand),var(--accent-violet))] text-white text-2xs font-bold whitespace-nowrap shadow-cb-sm">
                   Most Popular
                 </span>
               )}
@@ -105,7 +105,7 @@ export function PlanGrid({
               <ul className="flex flex-col gap-1.5 flex-1">
                 {plan.features.map((feature) => (
                   <li key={feature} className="flex items-center gap-2 text-xs text-cb-secondary">
-                    <span className="text-[var(--success)]">+</span>
+                    <span className="text-[var(--success)]">✓</span>
                     {feature}
                   </li>
                 ))}

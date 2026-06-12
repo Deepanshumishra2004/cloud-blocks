@@ -2,9 +2,10 @@
 import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { z }      from "zod";
-import { deleteReplPod, getReplRuntimeUrls, provisionReplRuntime, replPodExists } from "../services/k8s.service";
+import { deleteReplPod, getReplPodState, getReplRuntimeUrls, provisionReplRuntime, replPodExists } from "../services/k8s.service";
 import { seedReplFromTemplate } from "../services/repl-storage.service";
 import { logger } from "../lib/logger";
+import { canCreateRepl, formatReplLimit, getUserReplUsage } from "../services/plan-limits.service";
 
 /* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    VALIDATION
@@ -119,19 +120,10 @@ export const createRepl = async (req: Request, res: Response) => {
 
     const userId = (req as any).userId;
 
-    // Enforce per-plan repl limit
-    const [count, sub] = await Promise.all([
-      prisma.repl.count({ where: { userId } }),
-      prisma.subscription.findUnique({
-        where:  { userId },
-        select: { plan: { select: { maxRepls: true } } },
-      }),
-    ]);
-
-    const maxRepls = sub?.plan?.maxRepls ?? 3; // 3 = free tier default
-    if (count >= maxRepls) {
+    const { replCount, maxRepls } = await getUserReplUsage(userId);
+    if (!canCreateRepl(replCount, maxRepls)) {
       return res.status(403).json({
-        message: `Your plan allows ${maxRepls} repl${maxRepls !== 1 ? "s" : ""}. Upgrade to create more.`,
+        message: `Your plan allows ${formatReplLimit(maxRepls)}. You are using ${replCount}/${maxRepls}. Upgrade to create more.`,
       });
     }
 
@@ -220,6 +212,20 @@ export const startRepl = async (req: Request, res: Response) => {
     const existing = await ownedRepl((req as any).params.replId, (req as any).userId);
     if (!existing) return res.status(404).json({ message: "Repl not found" });
 
+    const podState = await getReplPodState(existing.id);
+    if (podState.ready) {
+      await prisma.repl.update({
+        where: { id: existing.id },
+        data: { status: "RUNNING" },
+      });
+
+      return res.status(200).json({
+        message: "Repl already running",
+        status: "RUNNING",
+        ...getReplRuntimeUrls(existing.id),
+      });
+    }
+
     let runtime;
     try {
       runtime = await provisionReplRuntime(existing.id, existing.type, (req as any).userId);
@@ -255,7 +261,7 @@ export const startRepl = async (req: Request, res: Response) => {
     });
   } catch (err) {
     logger.error({ err: err }, "[startRepl]");
-    return res.status(500).json({ message: "Failed to start repl" });
+    return res.status(500).json({ message: "Failed to start repl" , error : `err` });
   }
 };
 

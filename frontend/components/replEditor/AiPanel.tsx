@@ -67,12 +67,13 @@ export function AiPanel({
             {(["auto", "ask"] as const).map((m) => (
               <button
                 key={m}
+                disabled={generating || Boolean(pendingContent)}
                 onClick={() => onModeChange(m)}
                 className={`px-2 py-0.5 capitalize transition-colors ${
                   mode === m
                     ? "bg-white/15 text-white"
                     : "text-white/35 hover:text-white/60"
-                }`}
+                } disabled:cursor-not-allowed disabled:opacity-40`}
               >
                 {m}
               </button>

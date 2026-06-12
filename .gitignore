@@ -1,7 +1,18 @@
 .env
 .env.*
 .env.secrets
+
+# local dependency/cache output
+.bun-install/
 .bun-tmp/
 node_modules/
+
+# local Codex/agent tooling
+.agents/
+skills-lock.json
+
+# temporary patch files
+.tmp-*.json
+
 k8s/backend-secret.yaml
 k8s/repl-runtime-secret.yaml

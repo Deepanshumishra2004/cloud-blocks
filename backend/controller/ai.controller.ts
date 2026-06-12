@@ -5,6 +5,7 @@ import {
   decryptApiKey,
   encryptApiKey,
   generateWithProvider,
+  getDefaultAiModel,
   getRequiredAiCredentialSecret,
   maskApiKey,
   streamWithProvider,
@@ -202,12 +203,13 @@ export const generateReplCode = async (req: Request, res: Response) => {
     });
 
     if (!activeCredential) {
-      return res.status(400).json({ message: "Set an active AI credential in Settings first" });
+      return res.status(400).json({ message: "Set an active AI credential in API Key Management first" });
     }
 
     const result = await generateWithProvider({
       provider: activeCredential.provider,
       apiKey: decryptApiKey(activeCredential.encryptedKey, getRequiredAiCredentialSecret()),
+      model: parsed.data.model,
       prompt: parsed.data.prompt,
       filePath: parsed.data.filePath,
       currentContent: parsed.data.currentContent,
@@ -261,16 +263,18 @@ export const streamReplCode = async (req: Request, res: Response) => {
       select: { id: true, provider: true, name: true, encryptedKey: true },
       orderBy: { updatedAt: "desc" },
     });
-    if (!activeCredential) return res.status(400).json({ message: "Set an active AI credential in Settings first" });
+    if (!activeCredential) return res.status(400).json({ message: "Set an active AI credential in API Key Management first" });
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.flushHeaders();
 
+    const selectedModel = parsed.data.model ?? getDefaultAiModel(activeCredential.provider);
     const stream = await streamWithProvider({
       provider: activeCredential.provider,
       apiKey: decryptApiKey(activeCredential.encryptedKey, getRequiredAiCredentialSecret()),
+      model: selectedModel,
       prompt: parsed.data.prompt,
       filePath: parsed.data.filePath,
       currentContent: parsed.data.currentContent,
@@ -284,7 +288,12 @@ export const streamReplCode = async (req: Request, res: Response) => {
       res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
     }
 
-    res.write(`data: ${JSON.stringify({ done: true, provider: activeCredential.provider, credentialName: activeCredential.name })}\n\n`);
+    res.write(`data: ${JSON.stringify({
+      done: true,
+      provider: activeCredential.provider,
+      credentialName: activeCredential.name,
+      model: selectedModel,
+    })}\n\n`);
     res.end();
   } catch (error) {
     logger.error({ err: error }, "[streamReplCode]");

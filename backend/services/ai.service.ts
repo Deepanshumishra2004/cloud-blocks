@@ -6,21 +6,37 @@ import { env } from "../config/env";
 
 // ── Provider registry ─────────────────────────────────────────────────────────
 
-export const AI_PROVIDERS = ["GEMINI", "OPENAI", "ANTHROPIC", "DEEPSEEK"] as const;
+export const AI_PROVIDERS = ["OPENROUTER", "GEMINI", "OPENAI", "ANTHROPIC", "DEEPSEEK"] as const;
 export type AiProvider = (typeof AI_PROVIDERS)[number];
 
-const PROVIDER_MODELS: Record<AiProvider, string> = {
-  GEMINI:    "gemini-2.5-flash",
-  OPENAI:    "gpt-4o",
-  ANTHROPIC: "claude-sonnet-4-6",
-  DEEPSEEK:  "deepseek-chat",
+const PROVIDER_DEFAULT_MODELS: Record<AiProvider, string> = {
+  OPENROUTER: "openai/gpt-5.2",
+  GEMINI:     "gemini-2.5-flash",
+  OPENAI:     "gpt-4o",
+  ANTHROPIC:  "claude-sonnet-4-6",
+  DEEPSEEK:   "deepseek-chat",
 };
+
+export function getDefaultAiModel(provider: AiProvider): string {
+  return PROVIDER_DEFAULT_MODELS[provider];
+}
+
+function resolveAiModel(provider: AiProvider, model?: string | null): string {
+  const trimmed = model?.trim();
+  return trimmed || getDefaultAiModel(provider);
+}
 
 // ── Crypto helpers ─────────────────────────────────────────────────────────────
 
 function getEncryptionKey(secret: string): Buffer {
-  if (secret.length !== 32) throw new Error("AI_CREDENTIAL_SECRET must be exactly 32 characters long");
-  return Buffer.from(secret, "utf-8");
+  if (!secret.trim()) throw new Error("AI credentials are not configured on the server");
+  if (secret.length === 32) {
+    return Buffer.from(secret, "utf-8");
+  }
+  if (secret.length < 32) {
+    throw new Error("AI_CREDENTIAL_SECRET must be at least 32 characters long");
+  }
+  return crypto.createHash("sha256").update(secret, "utf-8").digest();
 }
 
 export function encryptApiKey(apiKey: string, secret: string): string {
@@ -56,6 +72,7 @@ type ConversationMessage = { role: "user" | "assistant"; content: string };
 type AiParams = {
   provider: AiProvider;
   apiKey: string;
+  model?: string | null;
   prompt: string;
   filePath: string;
   currentContent: string;
@@ -147,21 +164,21 @@ function geminiExtract(line: string): string | null {
   } catch { return null; }
 }
 
-async function* streamGemini(apiKey: string, system: string, messages: ConversationMessage[]): AsyncGenerator<string> {
+async function* streamGemini(apiKey: string, model: string, system: string, messages: ConversationMessage[]): AsyncGenerator<string> {
   const contents = messages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
   const response: AxiosResponse<IncomingMessage> = await axios.post(
-    `https://generativelanguage.googleapis.com/v1beta/models/${PROVIDER_MODELS.GEMINI}:streamGenerateContent?alt=sse`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`,
     { contents: [{ role: "user", parts: [{ text: system }] }, ...contents], generationConfig: { temperature: 0.2 } },
     { headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey }, responseType: "stream" },
   );
   yield* parseNodeStream(response.data, geminiExtract);
 }
 
-async function generateGemini(apiKey: string, system: string, messages: ConversationMessage[]) {
+async function generateGemini(apiKey: string, model: string, system: string, messages: ConversationMessage[]) {
   type GeminiResp = { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number } };
   const contents = messages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
   const { data } = await axios.post<GeminiResp>(
-    `https://generativelanguage.googleapis.com/v1beta/models/${PROVIDER_MODELS.GEMINI}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     { contents: [{ role: "user", parts: [{ text: system }] }, ...contents], generationConfig: { temperature: 0.2 } },
     { headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey } },
   );
@@ -175,8 +192,9 @@ type OpenAIChunk = { choices?: Array<{ delta?: { content?: string }; finish_reas
 type OpenAIResp  = { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
 
 const OPENAI_BASES: Partial<Record<AiProvider, string>> = {
-  OPENAI:   "https://api.openai.com/v1",
-  DEEPSEEK: "https://api.deepseek.com/v1",
+  OPENROUTER: "https://openrouter.ai/api/v1",
+  OPENAI:     "https://api.openai.com/v1",
+  DEEPSEEK:   "https://api.deepseek.com/v1",
 };
 
 function openAIExtract(line: string): string | null {
@@ -189,20 +207,45 @@ function openAIExtract(line: string): string | null {
   } catch { return null; }
 }
 
-async function* streamOpenAI(provider: "OPENAI" | "DEEPSEEK", apiKey: string, system: string, messages: ConversationMessage[]): AsyncGenerator<string> {
+function buildOpenAiCompatibleHeaders(provider: "OPENROUTER" | "OPENAI" | "DEEPSEEK", apiKey: string) {
+  return {
+    "Authorization": `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+    ...(provider === "OPENROUTER"
+      ? {
+          "HTTP-Referer": "https://cloudblocks.local",
+          "X-OpenRouter-Title": "CloudBlocks",
+        }
+      : {}),
+  };
+}
+
+async function* streamOpenAI(
+  provider: "OPENROUTER" | "OPENAI" | "DEEPSEEK",
+  apiKey: string,
+  model: string,
+  system: string,
+  messages: ConversationMessage[],
+): AsyncGenerator<string> {
   const response: AxiosResponse<IncomingMessage> = await axios.post(
     `${OPENAI_BASES[provider]}/chat/completions`,
-    { model: PROVIDER_MODELS[provider], messages: [{ role: "system", content: system }, ...messages], stream: true, temperature: 0.2 },
-    { headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" }, responseType: "stream" },
+    { model, messages: [{ role: "system", content: system }, ...messages], stream: true, temperature: 0.2 },
+    { headers: buildOpenAiCompatibleHeaders(provider, apiKey), responseType: "stream" },
   );
   yield* parseNodeStream(response.data, openAIExtract);
 }
 
-async function generateOpenAI(provider: "OPENAI" | "DEEPSEEK", apiKey: string, system: string, messages: ConversationMessage[]) {
+async function generateOpenAI(
+  provider: "OPENROUTER" | "OPENAI" | "DEEPSEEK",
+  apiKey: string,
+  model: string,
+  system: string,
+  messages: ConversationMessage[],
+) {
   const { data } = await axios.post<OpenAIResp>(
     `${OPENAI_BASES[provider]}/chat/completions`,
-    { model: PROVIDER_MODELS[provider], messages: [{ role: "system", content: system }, ...messages], temperature: 0.2 },
-    { headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" } },
+    { model, messages: [{ role: "system", content: system }, ...messages], temperature: 0.2 },
+    { headers: buildOpenAiCompatibleHeaders(provider, apiKey) },
   );
   return { text: data.choices?.[0]?.message?.content ?? "", promptTokens: data.usage?.prompt_tokens ?? 0, completionTokens: data.usage?.completion_tokens ?? 0 };
 }
@@ -223,19 +266,19 @@ function anthropicExtract(line: string): string | null {
   } catch { return null; }
 }
 
-async function* streamAnthropic(apiKey: string, system: string, messages: ConversationMessage[]): AsyncGenerator<string> {
+async function* streamAnthropic(apiKey: string, model: string, system: string, messages: ConversationMessage[]): AsyncGenerator<string> {
   const response: AxiosResponse<IncomingMessage> = await axios.post(
     "https://api.anthropic.com/v1/messages",
-    { model: PROVIDER_MODELS.ANTHROPIC, max_tokens: 8096, system, messages, stream: true, temperature: 0.2 },
+    { model, max_tokens: 8096, system, messages, stream: true, temperature: 0.2 },
     { headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" }, responseType: "stream" },
   );
   yield* parseNodeStream(response.data, anthropicExtract);
 }
 
-async function generateAnthropic(apiKey: string, system: string, messages: ConversationMessage[]) {
+async function generateAnthropic(apiKey: string, model: string, system: string, messages: ConversationMessage[]) {
   const { data } = await axios.post<AnthropicResp>(
     "https://api.anthropic.com/v1/messages",
-    { model: PROVIDER_MODELS.ANTHROPIC, max_tokens: 8096, system, messages, temperature: 0.2 },
+    { model, max_tokens: 8096, system, messages, temperature: 0.2 },
     { headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" } },
   );
   return { text: data.content?.map((c) => c.text ?? "").join("") ?? "", promptTokens: data.usage?.input_tokens ?? 0, completionTokens: data.usage?.output_tokens ?? 0 };
@@ -246,11 +289,13 @@ async function generateAnthropic(apiKey: string, system: string, messages: Conve
 export async function streamWithProvider(params: AiParams): Promise<AsyncGenerator<string>> {
   const system = buildSystem(params);
   const messages = buildMessages(params);
+  const model = resolveAiModel(params.provider, params.model);
   switch (params.provider) {
-    case "GEMINI":    return streamGemini(params.apiKey, system, messages);
-    case "OPENAI":    return streamOpenAI("OPENAI", params.apiKey, system, messages);
-    case "DEEPSEEK":  return streamOpenAI("DEEPSEEK", params.apiKey, system, messages);
-    case "ANTHROPIC": return streamAnthropic(params.apiKey, system, messages);
+    case "OPENROUTER": return streamOpenAI("OPENROUTER", params.apiKey, model, system, messages);
+    case "GEMINI":     return streamGemini(params.apiKey, model, system, messages);
+    case "OPENAI":     return streamOpenAI("OPENAI", params.apiKey, model, system, messages);
+    case "DEEPSEEK":   return streamOpenAI("DEEPSEEK", params.apiKey, model, system, messages);
+    case "ANTHROPIC":  return streamAnthropic(params.apiKey, model, system, messages);
   }
 }
 
@@ -261,15 +306,17 @@ export async function generateWithProvider(params: AiParams): Promise<{
 }> {
   const system = buildSystem(params);
   const messages = buildMessages(params);
+  const model = resolveAiModel(params.provider, params.model);
   let result: { text: string; promptTokens: number; completionTokens: number };
   switch (params.provider) {
-    case "GEMINI":    result = await generateGemini(params.apiKey, system, messages); break;
-    case "OPENAI":    result = await generateOpenAI("OPENAI", params.apiKey, system, messages); break;
-    case "DEEPSEEK":  result = await generateOpenAI("DEEPSEEK", params.apiKey, system, messages); break;
-    case "ANTHROPIC": result = await generateAnthropic(params.apiKey, system, messages); break;
+    case "OPENROUTER": result = await generateOpenAI("OPENROUTER", params.apiKey, model, system, messages); break;
+    case "GEMINI":     result = await generateGemini(params.apiKey, model, system, messages); break;
+    case "OPENAI":     result = await generateOpenAI("OPENAI", params.apiKey, model, system, messages); break;
+    case "DEEPSEEK":   result = await generateOpenAI("DEEPSEEK", params.apiKey, model, system, messages); break;
+    case "ANTHROPIC":  result = await generateAnthropic(params.apiKey, model, system, messages); break;
   }
   return {
-    model: PROVIDER_MODELS[params.provider],
+    model,
     content: result.text,
     usage: { promptTokens: result.promptTokens, completionTokens: result.completionTokens, totalTokens: result.promptTokens + result.completionTokens },
   };

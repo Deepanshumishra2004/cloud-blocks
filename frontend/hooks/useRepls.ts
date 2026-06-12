@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import api from "@/lib/api";
 import type { Repl, ReplType } from "@/lib/api";
 
+const REPL_START_TIMEOUT_MS = 130_000;
+
 interface UseReplsReturn {
   repls:      Repl[];
   loading:    boolean;
@@ -83,7 +85,9 @@ export function useRepls(): UseReplsReturn {
   const startRepl = useCallback(async (id: string) => {
     setRepls((prev) => prev.map((r) => r.id === id ? { ...r, status: "STARTING" } : r));
     try {
-      await api.post(`/api/v1/repl/${id}/start`);
+      await api.post(`/api/v1/repl/${id}/start`, undefined, {
+        timeout: REPL_START_TIMEOUT_MS,
+      });
       // Poll until backend confirms RUNNING
       const poll = setInterval(async () => {
         const { data } = await api.get<{ repl: Repl }>(`/api/v1/repl/${id}`);

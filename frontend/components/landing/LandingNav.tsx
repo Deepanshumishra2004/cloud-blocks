@@ -1,32 +1,41 @@
 "use client";
-// src/components/landing/LandingNav.tsx
+
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import Link                    from "next/link";
-import { useRouter }           from "next/navigation";
-import { Button }              from "@/components/ui/Button";
-import { Avatar }              from "@/components/ui/Misc";
-import { ThemeToggle }         from "@/components/ui/ThemeToggle";
-import { useAuthStore }        from "@/lib/authstore";
-import { fetchUser }           from "@/lib/api";
+import { Button } from "@/components/ui/Button";
+import { Avatar } from "@/components/ui/Misc";
+import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
-  DropdownMenuItem, DropdownMenuSeparator,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
 } from "@/components/ui/Dropdown";
 import { cn } from "@/lib/cn";
+import { fetchUser } from "@/lib/api";
+import { useAuthStore } from "@/lib/authstore";
+
+const NAV_LINKS = [
+  { href: "#features", label: "Product" },
+  { href: "#pricing", label: "Pricing" },
+  { href: "/docs", label: "Docs" },
+  { href: "/blog", label: "Blog" },
+];
 
 export function LandingNav() {
-  const router  = useRouter();
+  const router = useRouter();
   const { user, isHydrated, hydrate, logout } = useAuthStore();
   const [scrolled, setScrolled] = useState(false);
 
-  // Hydrate auth from cookie once on mount — no redirect, just check
   useEffect(() => {
     if (!isHydrated) hydrate(fetchUser);
-  }, [isHydrated, hydrate]);
+  }, [hydrate, isHydrated]);
 
-  // Subtle border appears after scrolling 8px
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8);
+    onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
@@ -35,134 +44,140 @@ export function LandingNav() {
     try {
       const { default: api } = await import("@/lib/api");
       await api.post("/api/v1/user/signout");
-    } catch { /* clear locally regardless */ } finally {
+    } catch {
+      // Local session state should clear even when the network request fails.
+    } finally {
       logout();
       router.push("/");
     }
   }
 
-  const initials = user?.username?.slice(0, 2).toUpperCase() ?? "??";
+  const initials = user?.username?.slice(0, 2).toUpperCase() ?? "CB";
 
   return (
-    <nav className={cn(
-      "fixed top-0 left-0 right-0 z-50 h-16",
-      "flex items-center justify-between px-6 md:px-12",
-    )}>
-      {/* Frosted glass backdrop */}
-      <div className={cn(
-        "absolute inset-0 bg-[var(--cb-bg-page)]/80 backdrop-blur-md",
-        "border-b transition-colors duration-200",
-        scrolled ? "border-cb" : "border-transparent",
-        "pointer-events-none"
-      )} />
-
-      {/* ── Logo ─────────────────────────────────────────── */}
-      <Link href="/" className="relative flex items-center gap-2.5 shrink-0">
-        <div className="w-7 h-7 bg-brand rounded-md flex items-center justify-center">
-          <span className="font-mono font-bold text-xs text-[#111]">CB</span>
-        </div>
-        <span className="font-mono font-bold text-sm text-cb-primary tracking-tight">
-          cloudblocks
-        </span>
-      </Link>
-
-      {/* ── Nav links ────────────────────────────────────── */}
-      <div className="relative hidden md:flex items-center gap-6">
-        {[
-          { href: "#features", label: "Features" },
-          { href: "#pricing",  label: "Pricing"  },
-          { href: "/docs",     label: "Docs"      },
-        ].map(({ href, label }) => (
-          <Link
-            key={href}
-            href={href}
-            className="text-sm text-cb-secondary hover:text-cb-primary transition-colors duration-100"
-          >
-            {label}
-          </Link>
-        ))}
-      </div>
-
-      {/* ── Right side ───────────────────────────────────── */}
-      <div className="relative flex items-center gap-2">
-
-        {/* Theme toggle — always visible */}
-        <ThemeToggle />
-
-        {/* Reserve width while hydrating to prevent layout shift */}
-        {!isHydrated && <div className="w-[148px] h-8" aria-hidden />}
-
-        {/* ── Logged OUT ── */}
-        {isHydrated && !user && (
-          <>
-            <Button variant="ghost" size="sm" asChild>
-              <Link href="/signin">Sign in</Link>
-            </Button>
-            <Button variant="primary" size="sm" asChild>
-              <Link href="/signup">Get started →</Link>
-            </Button>
-          </>
+    <nav className="fixed inset-x-0 top-0 z-50 h-16">
+      <div
+        className={cn(
+          "absolute inset-0 theme-chrome backdrop-blur-md transition-colors",
+          scrolled ? "border-b border-cb" : "border-b border-transparent"
         )}
+      />
+      <div className="landing-container relative flex h-full items-center justify-between">
+        <Link href="/" className="group flex items-center gap-2.5">
+          <CloudBlocksMark />
+          <span className="font-sans text-lg font-bold text-cb-primary">
+            CloudBlocks
+          </span>
+        </Link>
 
-        {/* ── Logged IN ── */}
-        {isHydrated && user && (
-          <>
-            {/* Dashboard shortcut button */}
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => router.push("/dashboard")}
-              leftIcon={<GridIcon />}
+        <div className="hidden items-center gap-8 md:flex">
+          {NAV_LINKS.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className="relative text-sm font-medium text-cb-primary/90 transition hover:text-white after:absolute after:-bottom-2 after:left-0 after:h-px after:w-0 after:bg-brand after:transition-all after:duration-200 hover:after:w-full"
             >
-              Dashboard
-            </Button>
+              {item.label}
+            </Link>
+          ))}
+        </div>
 
-            {/* User avatar dropdown */}
-            <DropdownMenu>
-              <DropdownMenuTrigger>
-                <button
-                  aria-label="User menu"
-                  className="flex items-center gap-1.5 pl-1 pr-2 py-1 rounded-md hover:bg-[var(--cb-bg-hover)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand"
-                >
-                  <Avatar
-                    initials={initials}
-                    src={user.avatar ?? undefined}
-                    size="sm"
-                  />
-                  <span className="hidden sm:block text-xs font-medium text-cb-primary max-w-[80px] truncate">
-                    {user.username}
-                  </span>
-                  <ChevronDownIcon />
-                </button>
-              </DropdownMenuTrigger>
+        <div className="flex items-center gap-2">
+          <a
+            href="https://github.com/Deepanshumishra2004/cloud-blocks"
+            target="_blank"
+            rel="noreferrer"
+            className="shine-border hidden items-center gap-2 rounded-full border border-transparent px-3 py-1 text-sm text-cb-secondary transition hover:border-cb hover:text-cb-primary sm:flex"
+          >
+            <GitHubIcon />
+            <span>GitHub</span>
+          </a>
 
-              <DropdownMenuContent align="end" className="w-52">
-                {/* Identity */}
-                <div className="px-3 py-2.5 border-b border-cb mb-1">
-                  <p className="text-xs font-semibold text-cb-primary truncate">{user.username}</p>
-                  <p className="text-2xs text-cb-muted truncate mt-0.5">{user.email}</p>
-                </div>
-                <DropdownMenuItem icon={<GridIcon />} onSelect={() => router.push("/dashboard")}>
-                  Dashboard
-                </DropdownMenuItem>
-                <DropdownMenuItem icon={<GearIcon />} onSelect={() => router.push("/dashboard/settings")}>
-                  Settings
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem icon={<SignOutIcon />} variant="danger" onSelect={handleSignOut}>
-                  Sign out
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </>
-        )}
+          <ThemeToggle className="hidden sm:flex" />
+
+          {!isHydrated && <div className="h-9 w-[154px]" aria-hidden />}
+
+          {isHydrated && !user && (
+            <>
+              <Button variant="outline" size="sm" asChild className="rounded-full">
+                <Link href="/signin">Log in</Link>
+              </Button>
+              <Button variant="primary" size="sm" asChild className="rounded-full">
+                <Link href="/signup">Sign up</Link>
+              </Button>
+            </>
+          )}
+
+          {isHydrated && user && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => router.push("/dashboard")}
+                className="rounded-full"
+              >
+                Dashboard
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger>
+                  <button
+                    aria-label="User menu"
+                    className="flex items-center gap-2 rounded-full border border-cb bg-cb-surface py-1 pl-1 pr-2 text-xs text-cb-primary transition hover:border-cb-strong"
+                  >
+                    <Avatar initials={initials} src={user.avatar ?? undefined} size="sm" />
+                    <ChevronDownIcon />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                  <div className="mb-1 border-b border-cb px-3 py-2.5">
+                    <p className="truncate text-xs font-semibold text-cb-primary">
+                      {user.username}
+                    </p>
+                    <p className="mt-0.5 truncate text-2xs text-cb-muted">
+                      {user.email}
+                    </p>
+                  </div>
+                  <DropdownMenuItem onSelect={() => router.push("/dashboard")}>
+                    Dashboard
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => router.push("/dashboard/settings")}>
+                    Settings
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem variant="danger" onSelect={handleSignOut}>
+                    Sign out
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </>
+          )}
+        </div>
       </div>
     </nav>
   );
 }
 
-/* ── Icons ── */
-function GridIcon()       { return <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1"/><rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>; }
-function GearIcon()       { return <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5L13 13M3 13l1.5-1.5M11.5 4.5L13 3"/></svg>; }
-function SignOutIcon()    { return <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M6 2H3a1 1 0 00-1 1v10a1 1 0 001 1h3M10 11l4-3-4-3M14 8H6"/></svg>; }
-function ChevronDownIcon(){ return <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M3 4.5L6 7.5l3-3"/></svg>; }
+function CloudBlocksMark() {
+  return (
+    <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden className="transition-transform duration-200 group-hover:-translate-y-0.5 group-hover:text-brand">
+      <path d="M6 20.5 14 5l8 15.5h-4.6L14 13.7l-3.4 6.8H6Z" fill="currentColor" />
+      <path d="M5.5 22.5h17" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function GitHubIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.69c-2.78.61-3.37-1.18-3.37-1.18-.45-1.15-1.11-1.46-1.11-1.46-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.36 1.08 2.94.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.58 9.58 0 0 1 12 6.03c.85 0 1.7.11 2.5.33 1.9-1.29 2.74-1.02 2.74-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.94.36.31.68.92.68 1.85v2.74c0 .26.18.57.69.48A10 10 0 0 0 12 2Z" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden>
+      <path d="m3 4.5 3 3 3-3" />
+    </svg>
+  );
+}

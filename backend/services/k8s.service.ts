@@ -2,9 +2,11 @@ import * as k8s from "@kubernetes/client-node";
 import { env } from "../config/env";
 import { logger } from "../lib/logger";
 
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-
 const kc = new k8s.KubeConfig();
+
+if (env.K8S_SKIP_TLS_VERIFY) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+}
 
 if (process.env.KUBERNETES_SERVICE_HOST && process.env.KUBERNETES_SERVICE_PORT) {
   kc.loadFromCluster();
@@ -12,13 +14,25 @@ if (process.env.KUBERNETES_SERVICE_HOST && process.env.KUBERNETES_SERVICE_PORT) 
   kc.loadFromDefault();
 }
 
+if (env.K8S_SKIP_TLS_VERIFY) {
+  const cluster = kc.getCurrentCluster();
+  if (cluster) {
+    kc.loadFromClusterAndUser(
+      { ...cluster, skipTLSVerify: true },
+      kc.getCurrentUser() ?? { name: "default" },
+    );
+  }
+}
+
 const coreApi = kc.makeApiClient(k8s.CoreV1Api);
 const networkingApi = kc.makeApiClient(k8s.NetworkingV1Api);
 
 const NAMESPACE = env.REPL_NAMESPACE;
 const REPL_IMAGE = env.REPL_IMAGE;
+const REPL_IMAGE_PULL_POLICY = env.REPL_IMAGE_PULL_POLICY;
 const BASE_DOMAIN = env.REPL_BASE_DOMAIN;
 const REPL_RUNTIME_SECRET = env.REPL_RUNTIME_SECRET;
+const REPL_STOP_GRACE_SECONDS = 60;
 
 const inferPublicProtocol = (): string => {
   if (env.REPL_PUBLIC_PROTOCOL) return env.REPL_PUBLIC_PROTOCOL;
@@ -48,6 +62,30 @@ const isAlreadyExistsError = (error: unknown): boolean => {
   );
 };
 
+const isNotFoundError = (error: unknown): boolean => {
+  const e = error as {
+    statusCode?: number;
+    body?: { reason?: string };
+    message?: string;
+  };
+
+  return (
+    e?.statusCode === 404 ||
+    e?.body?.reason === "NotFound" ||
+    (typeof e?.message === "string" && e.message.includes("NotFound"))
+  );
+};
+
+const bodyOf = <T>(response: T | { body: T }): T =>
+  response && typeof response === "object" && "body" in response
+    ? (response as { body: T }).body
+    : (response as T);
+
+const hasDeletionTimestamp = (
+  resource: { metadata?: { deletionTimestamp?: string | Date } } | undefined,
+): boolean =>
+  Boolean(resource?.metadata?.deletionTimestamp);
+
 const safeReplId = (replId: string) => replId.toLowerCase().replace(/[^a-z0-9-]/g, "-");
 
 const isPodReady = (pod: k8s.V1Pod | undefined): boolean => {
@@ -70,6 +108,37 @@ export const getReplRuntimeUrls = (replId: string) => {
     previewUrl: `${REPL_PUBLIC_PROTOCOL}://${host}/`,
     wsUrl: `${REPL_PUBLIC_WS_PROTOCOL}://${host}/ws`,
   };
+};
+
+export const getReplPodState = async (replId: string): Promise<{
+  exists: boolean;
+  ready: boolean;
+  phase?: string;
+  terminating: boolean;
+}> => {
+  try {
+    const cleanReplId = safeReplId(replId);
+    const response = await coreApi.readNamespacedPod({
+      name: `repl-${cleanReplId}`,
+      namespace: NAMESPACE,
+    });
+    const pod = bodyOf<k8s.V1Pod>(response);
+
+    return {
+      exists: true,
+      ready: isPodReady(pod),
+      phase: pod.status?.phase,
+      terminating: hasDeletionTimestamp(pod),
+    };
+  } catch (error) {
+    if (!isNotFoundError(error)) throw error;
+
+    return {
+      exists: false,
+      ready: false,
+      terminating: false,
+    };
+  }
 };
 
 export const provisionReplRuntime = async (replId: string, type: string, userId: string) => {
@@ -95,7 +164,7 @@ export const provisionReplRuntime = async (replId: string, type: string, userId:
         {
           name: "runner",
           image: REPL_IMAGE,
-          imagePullPolicy: "Always",
+          imagePullPolicy: REPL_IMAGE_PULL_POLICY,
           env: [
             { name: "REPL_ID",       value: cleanReplId },
             { name: "REPL_TYPE",     value: normalizedType },
@@ -210,18 +279,7 @@ export const provisionReplRuntime = async (replId: string, type: string, userId:
     },
   };
 
-  try {
-    await coreApi.createNamespacedPod({ namespace: NAMESPACE, body: pod });
-  } catch (e) {
-    if (!isAlreadyExistsError(e)) throw e;
-    // Pod still Terminating from a previous stop — force-delete with zero grace and wait
-    logger.warn(`[k8s] pod repl-${cleanReplId} still exists (likely Terminating), force-deleting…`);
-    await coreApi
-      .deleteNamespacedPod({ name: podName, namespace: NAMESPACE })
-      .catch((delErr: unknown) => logger.warn(`[k8s] force-delete pod ignored: ${String(delErr)}`));
-    await waitForPodGone(cleanReplId);
-    await coreApi.createNamespacedPod({ namespace: NAMESPACE, body: pod });
-  }
+  await createOrAdoptReplPod(cleanReplId, podName, pod);
 
   try {
     await coreApi.createNamespacedService({ namespace: NAMESPACE, body: svc });
@@ -265,19 +323,22 @@ const waitForPodReady = async (cleanReplId: string, timeoutMs = 120_000): Promis
         name: podName,
         namespace: NAMESPACE,
       });
-      const pod = response.body;
+      const pod = bodyOf<k8s.V1Pod>(response);
 
       if (isPodReady(pod)) return;
+
+      if (hasDeletionTimestamp(pod)) {
+        logger.info(`[k8s] waiting for pod ${podName} to finish terminating before readiness check`);
+        await waitForPodGone(cleanReplId);
+        continue;
+      }
 
       const phase = pod.status?.phase;
       if (phase === "Failed" || phase === "Succeeded") {
         throw new Error(`Pod ${podName} exited during startup with phase ${phase}`);
       }
     } catch (error) {
-      const e = error as { statusCode?: number };
-      if (e.statusCode !== 404 && e.statusCode !== undefined) {
-        throw error;
-      }
+      if (!isNotFoundError(error)) throw error;
     }
 
     await sleep(2_000);
@@ -286,41 +347,102 @@ const waitForPodReady = async (cleanReplId: string, timeoutMs = 120_000): Promis
   throw new Error(`Timed out waiting for pod repl-${cleanReplId} to become ready`);
 };
 
-const waitForPodGone = async (cleanReplId: string, timeoutMs = 30_000): Promise<void> => {
+const waitForPodGone = async (cleanReplId: string, timeoutMs = (REPL_STOP_GRACE_SECONDS + 15) * 1_000): Promise<void> => {
+  const podName = `repl-${cleanReplId}`;
   const deadline = Date.now() + timeoutMs;
+
   while (Date.now() < deadline) {
-    const exists = await replPodExists(cleanReplId);
-    if (!exists) return;
+    try {
+      await coreApi.readNamespacedPod({
+        name: podName,
+        namespace: NAMESPACE,
+      });
+    } catch (error) {
+      if (isNotFoundError(error)) return;
+      throw error;
+    }
+
     await sleep(2_000);
   }
+
   throw new Error(`Timed out waiting for pod repl-${cleanReplId} to terminate`);
 };
 
 export const replPodExists = async (replId: string): Promise<boolean> => {
-  try {
-    const cleanReplId = safeReplId(replId);
-    await coreApi.readNamespacedPod({ name: `repl-${cleanReplId}`, namespace: NAMESPACE });
-    return true;
-  } catch {
-    return false;
+  return (await getReplPodState(replId)).exists;
+};
+
+const deletePodIfPresent = async (
+  podName: string,
+  gracePeriodSeconds = REPL_STOP_GRACE_SECONDS,
+): Promise<void> => {
+  await coreApi
+    .deleteNamespacedPod({
+      name: podName,
+      namespace: NAMESPACE,
+      gracePeriodSeconds,
+      propagationPolicy: "Foreground",
+    })
+    .catch((error: unknown) => {
+      if (!isNotFoundError(error)) throw error;
+    });
+};
+
+const createOrAdoptReplPod = async (
+  cleanReplId: string,
+  podName: string,
+  pod: k8s.V1Pod,
+): Promise<void> => {
+  const deadline = Date.now() + 60_000;
+
+  while (Date.now() < deadline) {
+    try {
+      await coreApi.createNamespacedPod({ namespace: NAMESPACE, body: pod });
+      return;
+    } catch (error) {
+      if (!isAlreadyExistsError(error)) throw error;
+    }
+
+    const state = await getReplPodState(cleanReplId);
+
+    if (state.terminating) {
+      logger.info(`[k8s] pod ${podName} is terminating; waiting before recreating`);
+      await waitForPodGone(cleanReplId);
+      continue;
+    }
+
+    if (state.phase === "Failed" || state.phase === "Succeeded") {
+      logger.warn(`[k8s] pod ${podName} is ${state.phase}; deleting stale pod before recreate`);
+      await deletePodIfPresent(podName);
+      await waitForPodGone(cleanReplId);
+      continue;
+    }
+
+    logger.info(`[k8s] pod ${podName} already exists; adopting existing startup`);
+    return;
   }
+
+  throw new Error(`Timed out creating pod ${podName} because the previous pod did not clear`);
 };
 
 export const deleteReplPod = async (replId: string) => {
-    const cleanReplId = safeReplId(replId);
-    const podName = `repl-${cleanReplId}`;
-    const serviceName = `repl-${cleanReplId}-svc`;
-    const ingressName = `repl-${cleanReplId}-ing`;
-  
-    await networkingApi
-      .deleteNamespacedIngress({ name: ingressName, namespace: NAMESPACE })
-      .catch(() => {});
-  
-    await coreApi
-      .deleteNamespacedService({ name: serviceName, namespace: NAMESPACE })
-      .catch(() => {});
-  
-    await coreApi
-      .deleteNamespacedPod({ name: podName, namespace: NAMESPACE })
-      .catch(() => {});
-  };
+  const cleanReplId = safeReplId(replId);
+  const podName = `repl-${cleanReplId}`;
+  const serviceName = `repl-${cleanReplId}-svc`;
+  const ingressName = `repl-${cleanReplId}-ing`;
+
+  await deletePodIfPresent(podName);
+  await waitForPodGone(cleanReplId);
+
+  await networkingApi
+    .deleteNamespacedIngress({ name: ingressName, namespace: NAMESPACE })
+    .catch((error: unknown) => {
+      if (!isNotFoundError(error)) throw error;
+    });
+
+  await coreApi
+    .deleteNamespacedService({ name: serviceName, namespace: NAMESPACE })
+    .catch((error: unknown) => {
+      if (!isNotFoundError(error)) throw error;
+    });
+};

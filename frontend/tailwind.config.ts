@@ -25,10 +25,10 @@ const config: Config = {
       },
       colors: {
         brand: {
-          DEFAULT: "#facc15",
-          hover:   "#eab308",
-          subtle:  "rgba(250,204,21,0.10)",
-          border:  "rgba(250,204,21,0.30)",
+          DEFAULT: "#1498ff",
+          hover:   "#4fb5ff",
+          subtle:  "rgba(20,152,255,0.13)",
+          border:  "rgba(20,152,255,0.45)",
         },
         // Semantic — consumed via CSS variables in globals.css
         // Used as: bg-cb-page, text-cb-primary etc.
@@ -81,10 +81,10 @@ const config: Config = {
         sm: "0 1px 2px rgba(0,0,0,0.05)",
         md: "0 4px 12px rgba(0,0,0,0.08)",
         lg: "0 8px 24px rgba(0,0,0,0.12)",
-        "brand-sm": "0 0 0 3px rgba(250,204,21,0.15)",
+        "brand-sm": "0 0 0 3px rgba(20,152,255,0.18)",
       },
       ringColor: {
-        brand: "#facc15",
+        brand: "#1498ff",
       },
     },
   },

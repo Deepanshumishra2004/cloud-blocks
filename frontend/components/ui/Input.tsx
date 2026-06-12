@@ -27,9 +27,10 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
               "w-full h-9 rounded-md border bg-[var(--cb-input-bg)]",
               "text-sm text-cb-primary font-sans",
               "border-cb placeholder:text-cb-muted",
-              "transition-[border-color,box-shadow] duration-100",
+              "shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
+              "transition-[border-color,box-shadow,background-color] duration-150",
               "outline-none",
-              "focus:border-brand focus:ring-2 focus:ring-[var(--brand-subtle)]",
+              "focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-subtle)]",
               "disabled:opacity-50 disabled:cursor-not-allowed",
               error && "border-[var(--danger)] focus:ring-[var(--danger-subtle)]",
               leftIcon  ? "pl-9"  : "pl-3",
@@ -39,7 +40,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
             {...props}
           />
           {rightIcon && (
-            <span className="absolute right-3 text-cb-muted pointer-events-none text-sm">
+            <span className="absolute right-3 text-cb-muted text-sm">
               {rightIcon}
             </span>
           )}
@@ -54,9 +55,10 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
           "w-full h-9 px-3 rounded-md border bg-[var(--cb-input-bg)]",
           "text-sm text-cb-primary font-sans",
           "border-cb placeholder:text-cb-muted",
-          "transition-[border-color,box-shadow] duration-100",
+          "shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
+          "transition-[border-color,box-shadow,background-color] duration-150",
           "outline-none",
-          "focus:border-brand focus:ring-2 focus:ring-[var(--brand-subtle)]",
+          "focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-subtle)]",
           "disabled:opacity-50 disabled:cursor-not-allowed",
           error && "border-[var(--danger)] focus:ring-[var(--danger-subtle)]",
           className
@@ -85,9 +87,10 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
         "text-sm text-cb-primary font-sans",
         "border-cb placeholder:text-cb-muted",
         "resize-vertical min-h-[80px] leading-relaxed",
-        "transition-[border-color,box-shadow] duration-100",
+        "shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
+        "transition-[border-color,box-shadow,background-color] duration-150",
         "outline-none",
-        "focus:border-brand focus:ring-2 focus:ring-[var(--brand-subtle)]",
+        "focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-subtle)]",
         "disabled:opacity-50 disabled:cursor-not-allowed",
         error && "border-[var(--danger)] focus:ring-[var(--danger-subtle)]",
         className
@@ -115,9 +118,10 @@ const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
           "w-full h-9 pl-3 pr-8 rounded-md border bg-[var(--cb-input-bg)]",
           "text-sm text-cb-primary font-sans",
           "border-cb appearance-none cursor-pointer",
-          "transition-[border-color,box-shadow] duration-100",
+          "shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
+          "transition-[border-color,box-shadow,background-color] duration-150",
           "outline-none",
-          "focus:border-brand focus:ring-2 focus:ring-[var(--brand-subtle)]",
+          "focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand-subtle)]",
           "disabled:opacity-50 disabled:cursor-not-allowed",
           error && "border-[var(--danger)]",
           className

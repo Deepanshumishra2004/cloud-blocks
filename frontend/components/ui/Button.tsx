@@ -25,20 +25,21 @@ type ButtonSize = "xs" | "sm" | "md" | "lg" | "icon-xs" | "icon-sm" | "icon-md";
 
 const variantStyles: Record<ButtonVariant, string> = {
   primary: [
-    "bg-brand text-cb-primary border-brand",
-    "hover:bg-brand-hover hover:border-brand-hover",
+    "bg-[linear-gradient(135deg,var(--brand),var(--brand-strong))] text-white border-[color-mix(in_srgb,var(--brand)_70%,white_18%)]",
+    "hover:border-[var(--brand-hover)] hover:shadow-[0_18px_44px_color-mix(in_srgb,var(--brand)_30%,transparent)]",
+    "shadow-[0_12px_34px_color-mix(in_srgb,var(--brand)_22%,transparent),inset_0_1px_0_rgba(255,255,255,0.20)]",
     "active:scale-[0.98]",
   ].join(" "),
 
   secondary: [
-    "bg-cb-elevated text-cb-primary border-cb-strong",
-    "hover:bg-cb-hover",
+    "bg-[linear-gradient(180deg,color-mix(in_srgb,var(--cb-bg-elevated)_92%,white_8%),var(--cb-bg-elevated))] text-cb-primary border-cb",
+    "hover:bg-cb-hover hover:border-cb-strong hover:shadow-cb-sm",
     "active:scale-[0.98]",
   ].join(" "),
 
   outline: [
-    "bg-transparent text-cb-primary border-cb-strong",
-    "hover:bg-cb-hover",
+    "bg-[color-mix(in_srgb,var(--cb-bg-surface)_62%,transparent)] text-cb-primary border-cb",
+    "hover:bg-cb-hover hover:border-cb-strong",
     "active:scale-[0.98]",
   ].join(" "),
 
@@ -50,7 +51,7 @@ const variantStyles: Record<ButtonVariant, string> = {
 
   danger: [
     "bg-[var(--danger-subtle)] text-[var(--danger)] border-[var(--danger-border)]",
-    "hover:bg-[var(--danger)] hover:text-white hover:border-[var(--danger)]",
+    "hover:bg-[var(--danger)] hover:text-white hover:border-[var(--danger)] hover:shadow-[0_14px_34px_rgba(239,68,68,0.20)]",
     "active:scale-[0.98]",
   ].join(" "),
 
@@ -114,8 +115,10 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         className={cn(
           "inline-flex items-center justify-center gap-2",
           "rounded-md border font-sans",
-          "cursor-pointer select-none whitespace-nowrap",
-          "transition-all duration-100",
+          "cursor-pointer select-none whitespace-nowrap relative",
+          "button-shine transition-all duration-200",
+          "hover:-translate-y-0.5",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--cb-bg-page)]",
           "disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none",
           variantStyles[variant],
           sizeStyles[size],
@@ -131,7 +134,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         ) : (
           <>
             {leftIcon && <span className="shrink-0">{leftIcon}</span>}
-            {children}
+            <span className="relative z-10">{children}</span>
             {rightIcon && <span className="shrink-0">{rightIcon}</span>}
           </>
         )}

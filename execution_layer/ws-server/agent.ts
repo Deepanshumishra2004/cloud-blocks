@@ -6,6 +6,8 @@ import jwt from "jsonwebtoken";
 import path from "path";
 import { createClient } from "redis";
 import { WebSocketServer, type WebSocket } from "ws";
+import { createAppRuntime, type AppStatus } from "./appRuntime";
+import { createQueuedPatchApplier, createVersionedFileWriter, isPatchSyncRequiredError, type FilePatchChange } from "./filePatches";
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -61,19 +63,16 @@ type FileNode = {
   children?: FileNode[];
 };
 
-type FilePatchChange = {
-  rangeOffset: number;
-  rangeLength: number;
-  text: string;
-};
-
 type ClientMessage =
   | { type: "status"; status: "RUNNING" | "STOPPED" }
+  | { type: "app:start" }
+  | { type: "app:stop" }
   | { type: "terminal:input"; data: string }
   | { type: "terminal:resize"; cols: number; rows: number }
   | { type: "terminal:clear" }
   | { type: "file:list" }
   | { type: "file:read"; path: string }
+  | { type: "file:write"; path: string; version?: number; content: string }
   | { type: "file:create"; path: string; content?: string }
   | { type: "file:delete"; path: string }
   | { type: "file:rename"; oldPath: string; newPath: string }
@@ -86,13 +85,17 @@ type ClientMessage =
 
 type ServerMessage =
   | { type: "status"; status: "RUNNING" | "STOPPED" }
+  | { type: "app:status"; status: AppStatus }
   | { type: "terminal:output"; data: string }
   | { type: "terminal:clear" }
   | { type: "file:list"; tree: FileNode[] }
   | { type: "file:content"; path: string; content: string; version: number }
+  | { type: "file:written"; path: string; version: number }
+  | { type: "file:sync-required"; path: string; content: string; version: number }
   | { type: "file:patched"; path: string; version: number }
   | { type: "file:renamed"; oldPath: string; newPath: string }
   | { type: "preview:url"; url: string }
+  | { type: "preview:log"; data: string }
   | { type: "error"; message: string };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -128,6 +131,7 @@ const clients = new Set<WebSocket>();
 const terminalHistory: string[] = [];
 const wsAlive = new WeakMap<WebSocket, boolean>();
 let previewLogOffset = 0;
+let previewProbeTimer: ReturnType<typeof setTimeout> | null = null;
 const snapshotPrefix = `workspace/${USER_ID}/${REPL_ID}/`;
 const legacySnapshotPrefix = `repls/${REPL_ID}/`;
 
@@ -139,6 +143,8 @@ let ptyRestarting = false; // guard against concurrent PTY creation during resta
 let previewReadyUrl: string | null = null;
 // Debounce handle for file-system watcher broadcasts
 let fileWatchDebounce: ReturnType<typeof setTimeout> | null = null;
+
+const buildPtyShellCommand = () => `cd ${WORKSPACE} && exec /bin/bash -i`;
 
 // ── PTY Management ────────────────────────────────────────────────────────────
 
@@ -153,11 +159,11 @@ function getOrCreatePty(cols = 80, rows = 24): IPty {
   //   • read /proc/1/environ (ws-server secrets)
   //   • kill the ws-server process (different UID)
   //   • access /app (chmod 700, root-owned)
-  sharedPty = pty.spawn("su", ["-s", "/bin/bash", "sandbox"], {
+  sharedPty = pty.spawn("su", ["-s", "/bin/bash", "sandbox", "-c", buildPtyShellCommand()], {
     name: "xterm-256color",
     cols,
     rows,
-    cwd: WORKSPACE,
+    cwd: "/",
     env: {
       HOME: "/home/sandbox",
       // bun lives at /usr/local/bin in the oven/bun base image
@@ -182,6 +188,7 @@ function getOrCreatePty(cols = 80, rows = 24): IPty {
   sharedPty.onExit(({ exitCode }) => {
     console.log(`[pty] shell exited (code ${exitCode}) — restarting in 500ms`);
     sharedPty = null;
+    if (clients.size === 0) return;
     ptyRestarting = true;
     // Preserve scrollback — append a visible separator so users know the shell restarted
     pushTerminalHistory(`\r\n\x1b[33m─── shell restarted (exit ${exitCode}) ───\x1b[0m\r\n`);
@@ -212,6 +219,21 @@ const pushTerminalHistory = (data: string) => {
   }
   broadcastJson({ type: "terminal:output", data });
 };
+
+const appRuntime = createAppRuntime({
+  workspace: WORKSPACE,
+  replType: REPL_TYPE,
+  replId: REPL_ID,
+  previewLogPath: PREVIEW_LOG_PATH,
+  onOutput: (data) => broadcastJson({ type: "preview:log", data }),
+  onStatus: (status) => {
+    if (status === "stopped" || status === "error" || status === "idle") {
+      previewReadyUrl = null;
+    }
+    broadcastJson({ type: "app:status", status });
+  },
+  onError: (message) => broadcastJson({ type: "error", message }),
+});
 
 // ── File helpers ──────────────────────────────────────────────────────────────
 
@@ -335,19 +357,16 @@ const renameWorkspaceFile = async (oldRelative: string, newRelative: string): Pr
   if (cached !== null) await redis.set(getRedisFileKey(newRelative), cached);
 };
 
-const applyPatchChanges = (content: string, changes: FilePatchChange[]): string => {
-  let next = content;
-  const ordered = [...changes].sort((a, b) => b.rangeOffset - a.rangeOffset);
-  for (const change of ordered) {
-    const start = change.rangeOffset;
-    const end = change.rangeOffset + change.rangeLength;
-    if (Number.isNaN(start) || Number.isNaN(end) || start < 0 || end < start || end > next.length) {
-      throw new Error(`Patch range out of bounds: [${start}, ${end}] on content length ${next.length}`);
-    }
-    next = next.slice(0, start) + change.text + next.slice(end);
-  }
-  return next;
-};
+const applyQueuedPatch = createQueuedPatchApplier({
+  getVersion: (relativePath) => fileVersions.get(relativePath) ?? 0,
+  readContent: readWorkspaceFile,
+  writeContent: setWorkspaceFile,
+});
+
+const writeVersionedFile = createVersionedFileWriter({
+  getVersion: (relativePath) => fileVersions.get(relativePath) ?? 0,
+  writeContent: (relativePath, content) => setWorkspaceFile(relativePath, content),
+});
 
 // ── S3 / Snapshot helpers ─────────────────────────────────────────────────────
 
@@ -551,7 +570,13 @@ const WEB_PREVIEW_TYPES = new Set(["react", "next"]);
 const PREVIEW_PROBE_INTERVAL_MS = 2_000;
 const PREVIEW_PROBE_TIMEOUT_MS  = 180_000; // 3 min — next builds take a while
 
+function clearPreviewProbe(): void {
+  if (previewProbeTimer) clearTimeout(previewProbeTimer);
+  previewProbeTimer = null;
+}
+
 function startPreviewProbe(): void {
+  clearPreviewProbe();
   if (!WEB_PREVIEW_TYPES.has(REPL_TYPE)) return;
   if (!PREVIEW_URL) {
     console.warn("[preview] PREVIEW_URL not set — skipping readiness probe");
@@ -573,17 +598,19 @@ function startPreviewProbe(): void {
     axios
       .get(probeUrl, { timeout: 2_000, validateStatus: (s: number) => s < 500 })
       .then(() => {
+        previewProbeTimer = null;
         previewReadyUrl = PREVIEW_URL;
+        appRuntime.markRunning();
         console.log(`[preview] server ready — broadcasting preview:url ${PREVIEW_URL}`);
         broadcastJson({ type: "preview:url", url: PREVIEW_URL });
       })
       .catch(() => {
-        setTimeout(attempt, PREVIEW_PROBE_INTERVAL_MS);
+        previewProbeTimer = setTimeout(attempt, PREVIEW_PROBE_INTERVAL_MS);
       });
   };
 
   // Small initial delay — give the dev server a moment to start before first probe
-  setTimeout(attempt, 3_000);
+  previewProbeTimer = setTimeout(attempt, 3_000);
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -610,11 +637,8 @@ ensurePreviewLogState();
 await restoreFromS3().catch((err) => console.warn("[agent] restore failed, starting fresh:", err));
 
 // Boot the PTY immediately so it's ready for the first client
-getOrCreatePty();
 // Watch workspace for shell-originated file changes → keep explorer in sync
 startWorkspaceWatcher();
-// For web repls, probe the preview dev server and broadcast preview:url when ready
-startPreviewProbe();
 
 // ── Shutdown (guarded against double-invocation) ──────────────────────────────
 
@@ -626,9 +650,10 @@ const shutdown = async (): Promise<void> => {
   clearInterval(heartbeatInterval);
   clearInterval(snapshotInterval);
   clearInterval(activeInterval);
-  clearInterval(previewLogInterval);
+  clearPreviewProbe();
   if (fileWatchDebounce) clearTimeout(fileWatchDebounce);
   workspaceWatcher?.close();
+  await appRuntime.stop();
   sharedPty?.kill("SIGTERM");
   sharedPty = null;
   try { await syncWorkspaceSnapshot(); } catch (e) { console.error("[shutdown] snapshot error:", e); }
@@ -648,10 +673,6 @@ const activeInterval = setInterval(async () => {
 const snapshotInterval = setInterval(async () => {
   try { await syncWorkspaceSnapshot(); } catch (e) { console.error("[snapshot]", e); }
 }, SNAPSHOT_INTERVAL_MS);
-
-const previewLogInterval = setInterval(() => {
-  try { flushPreviewLogs(); } catch (e) { console.error("[preview:logs]", e); }
-}, 1_000);
 
 // ── WebSocket server ──────────────────────────────────────────────────────────
 
@@ -683,9 +704,11 @@ wss.on("connection", (ws, req) => {
 
   console.log(`[ws] client connected replId=${REPL_ID} ip=${clientIp}`);
   clients.add(ws);
+  getOrCreatePty();
 
   // Send current state to newly connected client
   sendJson(ws, { type: "status", status: "RUNNING" });
+  sendJson(ws, { type: "app:status", status: appRuntime.getStatus() });
   for (const line of terminalHistory) {
     sendJson(ws, { type: "terminal:output", data: line });
   }
@@ -704,7 +727,27 @@ wss.on("connection", (ws, req) => {
       switch (msg.type) {
         case "status":
           sendJson(ws, { type: "status", status: "RUNNING" });
+          sendJson(ws, { type: "app:status", status: appRuntime.getStatus() });
           break;
+
+        case "app:start": {
+          previewReadyUrl = null;
+          clearPreviewProbe();
+          await appRuntime.start();
+          if (WEB_PREVIEW_TYPES.has(REPL_TYPE)) {
+            startPreviewProbe();
+          } else {
+            appRuntime.markRunning();
+          }
+          break;
+        }
+
+        case "app:stop": {
+          previewReadyUrl = null;
+          clearPreviewProbe();
+          await appRuntime.stop();
+          break;
+        }
 
         // ── Terminal ────────────────────────────────────────────────────────
         case "terminal:input": {
@@ -742,12 +785,38 @@ wss.on("connection", (ws, req) => {
           break;
         }
 
+        case "file:write": {
+          const relativePath = normalizeRelativePath(msg.path);
+          const result = await writeVersionedFile(relativePath, msg.version, msg.content);
+          if (result.ok) {
+            sendJson(ws, { type: "file:written", path: relativePath, version: result.version });
+          } else {
+            const content = await readWorkspaceFile(relativePath);
+            sendJson(ws, {
+              type: "file:sync-required",
+              path: relativePath,
+              content,
+              version: result.expectedVersion,
+            });
+          }
+          break;
+        }
+
         case "file:patch": {
           const relativePath = normalizeRelativePath(msg.path);
-          const currentContent = await readWorkspaceFile(relativePath);
-          const nextContent = applyPatchChanges(currentContent, msg.changes);
-          const version = await setWorkspaceFile(relativePath, nextContent, msg.changes);
-          sendJson(ws, { type: "file:patched", path: relativePath, version });
+          try {
+            const version = await applyQueuedPatch(relativePath, msg.version, msg.changes);
+            sendJson(ws, { type: "file:patched", path: relativePath, version });
+          } catch (error) {
+            if (!isPatchSyncRequiredError(error)) throw error;
+            const content = await readWorkspaceFile(relativePath);
+            sendJson(ws, {
+              type: "file:content",
+              path: relativePath,
+              content,
+              version: fileVersions.get(relativePath) ?? 0,
+            });
+          }
           break;
         }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
@@ -14,6 +14,7 @@ import {
   startRepl,
   stopRepl,
   type AiCredential,
+  type AiProvider,
   type Repl,
   type ReplType,
   updateRepl,
@@ -43,8 +44,10 @@ import {
   LANG_MAP,
   WEB_TYPES,
 } from "@/components/replEditor/_lib/constants";
+import { computeAiPatch as computeAiPatchFromResponse } from "@/components/replEditor/_lib/aiPatch";
 import { findEntrypoint } from "@/components/replEditor/_lib/fileTree";
 import type {
+  AppStatus,
   FileNode,
   ReplStatus,
   WsMsg,
@@ -64,6 +67,8 @@ type TerminalLike = {
   loadAddon: (addon: unknown) => void;
   open: (element: HTMLElement) => void;
   dispose: () => void;
+  cols?: number;
+  rows?: number;
 };
 
 type FitAddonLike = {
@@ -88,7 +93,30 @@ type FilePatchChange = {
   text: string;
 };
 
-const PATCH_BATCH_WINDOW_MS = 75;
+const FILE_WRITE_DEBOUNCE_MS = 650;
+
+const DEFAULT_AI_MODELS: Record<AiProvider, string> = {
+  OPENROUTER: "openai/gpt-5.2",
+  GEMINI: "gemini-2.5-flash",
+  OPENAI: "gpt-4o",
+  ANTHROPIC: "claude-sonnet-4-6",
+  DEEPSEEK: "deepseek-chat",
+};
+
+function isPatchSyncError(message: string): boolean {
+  return message.includes("Patch range out of bounds") ||
+    message.includes("Stale patch version") ||
+    message.includes("File content changed; sync required");
+}
+
+function isUnsupportedFileWriteError(message: string): boolean {
+  return message.includes("Unknown message type");
+}
+
+function parseServerContentLength(message: string): number | null {
+  const match = message.match(/content length (\d+)/i);
+  return match ? Number(match[1]) : null;
+}
 
 export default function ReplEditorPage() {
   const { replId } = useParams<{ replId: string }>();
@@ -105,13 +133,16 @@ export default function ReplEditorPage() {
   const [saving, setSaving] = useState(false);
 
   const [status, setStatus] = useState<ReplStatus>("STOPPED");
+  const [appStatus, setAppStatus] = useState<AppStatus>("idle");
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const [appBusy, setAppBusy] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewFrameKey, setPreviewFrameKey] = useState(0);
-  const [activePanel, setActivePanel] = useState<"preview" | "output">("output");
+  const [activePanel, setActivePanel] = useState<"preview" | "output" | "ai">("output");
   const [outputLog, setOutputLog] = useState("");
   const [aiCredentials, setAiCredentials] = useState<AiCredential[]>([]);
+  const [aiModel, setAiModel] = useState(DEFAULT_AI_MODELS.OPENROUTER);
   const [aiMode, setAiMode] = useState<"auto" | "ask">("ask");
   const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
   const [generatingAi, setGeneratingAi] = useState(false);
@@ -121,7 +152,7 @@ export default function ReplEditorPage() {
   const [renaming, setRenaming] = useState(false);
   const [renameName, setRenameName] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [bottomTab, setBottomTab] = useState<"terminal" | "ai">("terminal");
+  const [terminalError, setTerminalError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const termRef = useRef<HTMLDivElement | null>(null);
@@ -130,16 +161,23 @@ export default function ReplEditorPage() {
   const outputBufferRef = useRef<string[]>([]);
   const outputLogRef = useRef("");
   const openFileRef = useRef<string | null>(null);
+  const fileContentRef = useRef("");
   const editorRef = useRef<MonacoEditorLike | null>(null);
   const editorDisposeRef = useRef<{ dispose: () => void } | null>(null);
   const ignoreEditorChangesRef = useRef(false);
   const patchQueueRef = useRef<Map<string, FilePatchChange[]>>(new Map());
   const patchTimerRef = useRef<number | null>(null);
+  const writeInFlightRef = useRef<Set<string>>(new Set());
+  const writeWaitersRef = useRef<Map<string, Set<() => void>>>(new Map());
+  const lastSentContentRef = useRef<Map<string, string>>(new Map());
+  const lastKnownServerLengthRef = useRef<Map<string, number>>(new Map());
+  const supportsFileWriteRef = useRef(true);
   const fileVersionRef = useRef<Map<string, number>>(new Map());
   const pendingFileRef = useRef<string | null>(null);
   const replRef = useRef<Repl | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectNoticeShownRef = useRef(false);
   const intentionalCloseRef = useRef(false);
   const connectIdRef = useRef(0);
   const fileContentsCache = useRef<Map<string, string>>(new Map());
@@ -153,26 +191,46 @@ export default function ReplEditorPage() {
   const RECONNECT_BASE_MS = 2_000;
   const RECONNECT_MAX_DELAY_MS = 10_000;
 
+  const activeAiCredential = useMemo(
+    () => aiCredentials.find((credential) => credential.isActive) ?? null,
+    [aiCredentials],
+  );
+
+  useEffect(() => {
+    if (!activeAiCredential) return;
+    setAiModel(DEFAULT_AI_MODELS[activeAiCredential.provider]);
+  }, [activeAiCredential?.provider]);
+
   const flushQueuedPatches = useCallback(
     (path: string) => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      if (writeInFlightRef.current.has(path)) return;
 
-      const queued = patchQueueRef.current.get(path);
-      if (!queued || queued.length === 0) return;
+      const content =
+        path === openFileRef.current
+          ? fileContentRef.current
+          : fileContentsCache.current.get(path);
 
-      const nextVersion = (fileVersionRef.current.get(path) ?? 0) + 1;
+      if (content === undefined) return;
+      const version = fileVersionRef.current.get(path) ?? 0;
 
-      wsRef.current.send(
-        JSON.stringify({
-          type: "file:patch",
-          path,
-          version: nextVersion,
-          changes: queued,
-        }),
-      );
+      const message = supportsFileWriteRef.current
+        ? { type: "file:write", path, version, content }
+        : {
+            type: "file:patch",
+            path,
+            changes: [{
+              rangeOffset: 0,
+              rangeLength: lastKnownServerLengthRef.current.get(path) ?? content.length,
+              text: content,
+            }],
+          };
 
-      fileVersionRef.current.set(path, nextVersion);
-      patchQueueRef.current.set(path, []);
+      wsRef.current.send(JSON.stringify(message));
+
+      writeInFlightRef.current.add(path);
+      lastSentContentRef.current.set(path, content);
+      fileContentsCache.current.set(path, content);
     },
     [],
   );
@@ -186,9 +244,67 @@ export default function ReplEditorPage() {
       patchTimerRef.current = window.setTimeout(() => {
         flushQueuedPatches(path);
         patchTimerRef.current = null;
-      }, PATCH_BATCH_WINDOW_MS);
+      }, FILE_WRITE_DEBOUNCE_MS);
     },
     [flushQueuedPatches],
+  );
+
+  const notifyWriteWaiters = useCallback((path: string) => {
+    const waiters = writeWaitersRef.current.get(path);
+    if (!waiters) return;
+
+    writeWaitersRef.current.delete(path);
+    waiters.forEach((notify) => notify());
+  }, []);
+
+  const waitForFileSynced = useCallback((path: string, timeoutMs = 5_000) => {
+    if (!dirtyFilesRef.current.has(path) && !writeInFlightRef.current.has(path)) {
+      return Promise.resolve(true);
+    }
+
+    return new Promise<boolean>((resolve) => {
+      let completed = false;
+      let timeoutId: number | null = null;
+
+      const finish = (synced: boolean) => {
+        if (completed) return;
+        completed = true;
+        if (timeoutId !== null) window.clearTimeout(timeoutId);
+
+        const waiters = writeWaitersRef.current.get(path);
+        waiters?.delete(check);
+        if (waiters?.size === 0) writeWaitersRef.current.delete(path);
+
+        resolve(synced);
+      };
+
+      const check = () => {
+        if (!dirtyFilesRef.current.has(path) && !writeInFlightRef.current.has(path)) {
+          finish(true);
+          return;
+        }
+
+        const waiters = writeWaitersRef.current.get(path) ?? new Set<() => void>();
+        waiters.add(check);
+        writeWaitersRef.current.set(path, waiters);
+      };
+
+      timeoutId = window.setTimeout(() => finish(false), timeoutMs);
+      check();
+    });
+  }, []);
+
+  const flushFileAndWait = useCallback(
+    async (path: string, timeoutMs = 5_000) => {
+      if (patchTimerRef.current !== null) {
+        window.clearTimeout(patchTimerRef.current);
+        patchTimerRef.current = null;
+      }
+
+      flushQueuedPatches(path);
+      return waitForFileSynced(path, timeoutMs);
+    },
+    [flushQueuedPatches, waitForFileSynced],
   );
 
   const openFileFromWs = (socket: WebSocket, path: string) => {
@@ -224,8 +340,21 @@ export default function ReplEditorPage() {
 
       ws.onopen = () => {
         reconnectAttemptsRef.current = 0;
+        reconnectNoticeShownRef.current = false;
         ws.send(JSON.stringify({ type: "status", status: "RUNNING" }));
         ws.send(JSON.stringify({ type: "file:list" }));
+        requestAnimationFrame(() => {
+          try {
+            fitAddonRef.current?.fit();
+            const cols = xtermRef.current?.cols;
+            const rows = xtermRef.current?.rows;
+            if (cols && rows && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "terminal:resize", cols, rows }));
+            }
+          } catch {
+            // xterm can reject fit while its panel is still measuring.
+          }
+        });
       };
 
       ws.onmessage = (event) => {
@@ -267,6 +396,13 @@ export default function ReplEditorPage() {
 
             pendingFileRef.current = null;
             fileVersionRef.current.set(message.path, message.version);
+            lastKnownServerLengthRef.current.set(message.path, message.content.length);
+            if (dirtyFilesRef.current.has(message.path)) {
+              schedulePatchFlush(message.path);
+              notifyWriteWaiters(message.path);
+              break;
+            }
+
             fileContentsCache.current.set(message.path, message.content);
             dirtyFilesRef.current.delete(message.path);
             setOpenTabs((prev) =>
@@ -280,6 +416,50 @@ export default function ReplEditorPage() {
               ignoreEditorChangesRef.current = false;
             }, 0);
             break;
+          case "file:written": {
+            fileVersionRef.current.set(message.path, message.version);
+            const sentContent = lastSentContentRef.current.get(message.path);
+            if (sentContent !== undefined) {
+              lastKnownServerLengthRef.current.set(message.path, sentContent.length);
+            }
+            writeInFlightRef.current.delete(message.path);
+            const latestContent =
+              message.path === openFileRef.current
+                ? fileContentRef.current
+                : fileContentsCache.current.get(message.path);
+
+            if (sentContent !== undefined && latestContent === sentContent) {
+              dirtyFilesRef.current.delete(message.path);
+              if (message.path === openFileRef.current) setIsDirty(false);
+            } else if (dirtyFilesRef.current.has(message.path)) {
+              schedulePatchFlush(message.path);
+            }
+            notifyWriteWaiters(message.path);
+            break;
+          }
+          case "file:sync-required": {
+            fileVersionRef.current.set(message.path, message.version);
+            lastKnownServerLengthRef.current.set(message.path, message.content.length);
+            writeInFlightRef.current.delete(message.path);
+
+            if (dirtyFilesRef.current.has(message.path)) {
+              schedulePatchFlush(message.path);
+              notifyWriteWaiters(message.path);
+              break;
+            }
+
+            fileContentsCache.current.set(message.path, message.content);
+            if (message.path === openFileRef.current) {
+              ignoreEditorChangesRef.current = true;
+              setFileContent(message.content);
+              setIsDirty(false);
+              window.setTimeout(() => {
+                ignoreEditorChangesRef.current = false;
+              }, 0);
+            }
+            notifyWriteWaiters(message.path);
+            break;
+          }
 
           case "file:renamed":
             fileContentsCache.current.set(
@@ -300,16 +480,44 @@ export default function ReplEditorPage() {
             break;
           case "file:patched":
             fileVersionRef.current.set(message.path, message.version);
-            if (message.path === openFileRef.current) {
-              const queued = patchQueueRef.current.get(message.path) ?? [];
-              if (queued.length === 0) setIsDirty(false);
+            {
+              const sentContent = lastSentContentRef.current.get(message.path);
+              if (sentContent !== undefined) {
+                lastKnownServerLengthRef.current.set(message.path, sentContent.length);
+              }
             }
+            writeInFlightRef.current.delete(message.path);
+            {
+              const sentContent = lastSentContentRef.current.get(message.path);
+              const latestContent =
+                message.path === openFileRef.current
+                  ? fileContentRef.current
+                  : fileContentsCache.current.get(message.path);
+              if (sentContent !== undefined && latestContent === sentContent) {
+                dirtyFilesRef.current.delete(message.path);
+                if (message.path === openFileRef.current) setIsDirty(false);
+              } else if (dirtyFilesRef.current.has(message.path)) {
+                schedulePatchFlush(message.path);
+              }
+            }
+            notifyWriteWaiters(message.path);
             break;
           case "status":
             setStatus(message.status);
             if (message.status === "RUNNING") setStarting(false);
             if (message.status === "STOPPED") {
               setStopping(false);
+              setAppStatus("idle");
+              setAppBusy(false);
+              setPreviewUrl(null);
+              setPreviewFrameKey((value: number) => value + 1);
+            }
+            break;
+          case "app:status":
+            setAppStatus(message.status);
+            setAppBusy(message.status === "starting");
+            if (message.status === "stopped" || message.status === "idle" || message.status === "error") {
+              setPreviewUrl(null);
               setPreviewFrameKey((value: number) => value + 1);
             }
             break;
@@ -323,6 +531,43 @@ export default function ReplEditorPage() {
             setOutputLog(outputLogRef.current);
             break;
           case "error":
+            if (isUnsupportedFileWriteError(message.message) && supportsFileWriteRef.current) {
+              supportsFileWriteRef.current = false;
+              const activePath = openFileRef.current;
+              if (activePath) {
+                writeInFlightRef.current.delete(activePath);
+                schedulePatchFlush(activePath);
+                notifyWriteWaiters(activePath);
+              }
+              break;
+            }
+            if (isPatchSyncError(message.message)) {
+              const activePath = openFileRef.current;
+              if (activePath && ws.readyState === WebSocket.OPEN) {
+                patchQueueRef.current.set(activePath, []);
+                writeInFlightRef.current.delete(activePath);
+                const serverLength = parseServerContentLength(message.message);
+                const currentContent = fileContentRef.current;
+
+                if (serverLength !== null) {
+                  ws.send(
+                    JSON.stringify({
+                      type: "file:patch",
+                      path: activePath,
+                      changes: [{ rangeOffset: 0, rangeLength: serverLength, text: currentContent }],
+                    }),
+                  );
+                  writeInFlightRef.current.add(activePath);
+                  lastSentContentRef.current.set(activePath, currentContent);
+                  lastKnownServerLengthRef.current.set(activePath, currentContent.length);
+                } else {
+                  pendingFileRef.current = activePath;
+                  ws.send(JSON.stringify({ type: "file:read", path: activePath }));
+                }
+                notifyWriteWaiters(activePath);
+              }
+              break;
+            }
             toast.error("Repl error", message.message);
             break;
         }
@@ -344,27 +589,35 @@ export default function ReplEditorPage() {
         if (reconnectAttemptsRef.current < MAX_RECONNECT) {
           const delay = Math.min(RECONNECT_BASE_MS * 2 ** reconnectAttemptsRef.current, RECONNECT_MAX_DELAY_MS);
           reconnectAttemptsRef.current += 1;
-          toast.error(`Terminal disconnected — reconnecting (${reconnectAttemptsRef.current}/${MAX_RECONNECT})…`);
+          if (!reconnectNoticeShownRef.current) {
+            reconnectNoticeShownRef.current = true;
+            toast.error("Terminal disconnected. Reconnecting...");
+          }
           reconnectTimerRef.current = window.setTimeout(() => {
             if (replRef.current) connectWs(replRef.current);
           }, delay);
         } else {
           reconnectAttemptsRef.current = 0;
+          reconnectNoticeShownRef.current = false;
           setStatus("STOPPED");
           toast.error("Terminal disconnected — start the repl to reconnect");
         }
       };
 
       ws.onerror = () => {
-        toast.error("Terminal connection failed");
+        console.warn("[repl] websocket connection error");
       };
     },
-    [toast],
+    [notifyWriteWaiters, schedulePatchFlush, toast],
   );
 
   useEffect(() => {
     openFileRef.current = openFile;
   }, [openFile]);
+
+  useEffect(() => {
+    fileContentRef.current = fileContent;
+  }, [fileContent]);
 
   useEffect(() => {
     replRef.current = repl;
@@ -382,7 +635,7 @@ export default function ReplEditorPage() {
         setRepl(loadedRepl);
         setStatus(loadedRepl.status as ReplStatus);
         setRenameName(loadedRepl.name);
-        setPreviewUrl(loadedRepl.previewUrl ?? null);
+        setPreviewUrl(null);
         setPreviewFrameKey(0);
 
         if (loadedRepl.status === "RUNNING") {
@@ -455,8 +708,12 @@ export default function ReplEditorPage() {
         terminalInstance.loadAddon(fitAddon);
         terminalInstance.loadAddon(new WebLinksAddon());
         terminalInstance.open(termRef.current!);
+        setTerminalError(null);
         // Defer fit so the flex container has its final painted dimensions
-        requestAnimationFrame(() => { if (mounted) fitAddon.fit(); });
+        requestAnimationFrame(() => {
+          if (!mounted) return;
+          try { fitAddon.fit(); } catch { /* panel may still be measuring */ }
+        });
 
         if (outputBufferRef.current.length > 0) {
           outputBufferRef.current.forEach((line) => terminalInstance.write(line));
@@ -491,6 +748,7 @@ export default function ReplEditorPage() {
         resizeObserver.observe(termRef.current!);
       } catch (err) {
         console.error("[terminal] init failed:", err);
+        setTerminalError(err instanceof Error ? err.message : "Terminal failed to initialize");
       }
     })();
 
@@ -503,26 +761,54 @@ export default function ReplEditorPage() {
     };
   }, []);
 
-  // Re-fit and focus xterm whenever the terminal tab becomes visible
   useEffect(() => {
-    if (bottomTab !== "terminal") return;
     const id = requestAnimationFrame(() => {
       fitAddonRef.current?.fit();
       xtermRef.current?.focus();
     });
     return () => cancelAnimationFrame(id);
-  }, [bottomTab]);
+  }, []);
 
   const handleSave = useCallback(async () => {
     if (!openFile || !wsRef.current) return;
 
     setSaving(true);
-    flushQueuedPatches(openFile);
+    const synced = await flushFileAndWait(openFile);
+    if (!synced) {
+      toast.error("Still syncing latest code", "Try saving again in a moment.");
+    }
+    setSaving(false);
+  }, [flushFileAndWait, openFile, toast]);
 
-    setTimeout(() => {
-      setSaving(false);
-    }, 300);
-  }, [flushQueuedPatches, openFile]);
+  const syncOpenFileBeforeAction = useCallback(async () => {
+    const path = openFileRef.current;
+    if (!path) return true;
+
+    const synced = await flushFileAndWait(path);
+    if (!synced) {
+      toast.error("Still syncing latest code", "Wait a moment and try again.");
+      return false;
+    }
+
+    return true;
+  }, [flushFileAndWait, toast]);
+
+  useEffect(() => {
+    return () => {
+      if (patchTimerRef.current !== null) {
+        window.clearTimeout(patchTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      writeWaitersRef.current.forEach((waiters) => {
+        waiters.forEach((notify) => notify());
+      });
+      writeWaitersRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -536,40 +822,8 @@ export default function ReplEditorPage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleSave]);
 
-  // Pure computation — no side effects. Caller owns editor/WS updates.
-  const computeAiPatch = useCallback((responseJson: string): {
-    content: string;
-    response: { type: "chat" | "code" | "mixed"; message: string | null; linesAdded: number; linesRemoved: number };
-  } => {
-    type Edit = { search: string; replace: string };
-    type AiResponse = { type: "chat" | "code" | "mixed"; message: string | null; edits: Edit[] | null };
-
-    let parsed: AiResponse;
-    try {
-      const clean = responseJson.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
-      parsed = JSON.parse(clean) as AiResponse;
-    } catch {
-      return { content: fileContent, response: { type: "chat", message: responseJson.trim() || "No response", linesAdded: 0, linesRemoved: 0 } };
-    }
-
-    const edits = parsed.edits ?? [];
-    let next = fileContent;
-    let linesAdded = 0;
-    let linesRemoved = 0;
-
-    for (const edit of edits) {
-      const idx = next.indexOf(edit.search);
-      if (idx === -1) continue; // search text not found — skip rather than corrupt
-      linesRemoved += edit.search.split("\n").length;
-      linesAdded += edit.replace ? edit.replace.split("\n").length : 0;
-      next = next.slice(0, idx) + edit.replace + next.slice(idx + edit.search.length);
-    }
-
-    return { content: next, response: { type: parsed.type, message: parsed.message ?? null, linesAdded, linesRemoved } };
-  }, [fileContent]);
-
   const applyFileReplacement = useCallback(
-    (path: string, nextContent: string) => {
+    (path: string, previousContent: string, nextContent: string) => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
         throw new Error("Start the repl before applying AI changes");
       }
@@ -582,21 +836,24 @@ export default function ReplEditorPage() {
         ignoreEditorChangesRef.current = false;
       }, 0);
 
-      wsRef.current.send(
-        JSON.stringify({
-          type: "file:patch",
-          path,
-          changes: [
-            {
+      const version = fileVersionRef.current.get(path) ?? 0;
+      const message = supportsFileWriteRef.current
+        ? { type: "file:write", path, version, content: nextContent }
+        : {
+            type: "file:patch",
+            path,
+            changes: [{
               rangeOffset: 0,
-              rangeLength: fileContent.length,
+              rangeLength: lastKnownServerLengthRef.current.get(path) ?? previousContent.length,
               text: nextContent,
-            },
-          ],
-        }),
-      );
+            }],
+          };
+
+      wsRef.current.send(JSON.stringify(message));
+      writeInFlightRef.current.add(path);
+      lastSentContentRef.current.set(path, nextContent);
     },
-    [fileContent],
+    [],
   );
 
   const handleTabClick = useCallback(
@@ -695,7 +952,7 @@ export default function ReplEditorPage() {
     [openFile, fileContent, handleTabClick],
   );
 
-  const handleRun = async () => {
+  const handleStartPod = async () => {
     if (!repl) return;
 
     setStarting(true);
@@ -714,13 +971,18 @@ export default function ReplEditorPage() {
       fileContentsCache.current.clear();
       fileVersionRef.current.clear();
       patchQueueRef.current.clear();
+      writeInFlightRef.current.clear();
+      writeWaitersRef.current.clear();
+      lastSentContentRef.current.clear();
+      lastKnownServerLengthRef.current.clear();
       dirtyFilesRef.current.clear();
       reconnectAttemptsRef.current = 0;
       xtermRef.current?.clear();
 
-      setPreviewUrl(runtime.previewUrl);
+      setPreviewUrl(null);
       setPreviewFrameKey((value: number) => value + 1);
       setStatus("RUNNING");
+      setAppStatus("idle");
       setRepl((prev) =>
         prev
           ? {
@@ -748,11 +1010,54 @@ export default function ReplEditorPage() {
     }
   };
 
+  const handleRunCode = async () => {
+    if (status !== "RUNNING") {
+      toast.error("Start the pod first");
+      return;
+    }
+
+    if (wsRef.current?.readyState !== WebSocket.OPEN) {
+      toast.error("Runtime is still connecting", "Try again in a moment.");
+      return;
+    }
+
+    setAppBusy(true);
+    const synced = await syncOpenFileBeforeAction();
+    if (!synced) {
+      setAppBusy(false);
+      return;
+    }
+
+    setPreviewUrl(null);
+    setPreviewFrameKey((value: number) => value + 1);
+    outputLogRef.current = "";
+    setOutputLog("");
+    wsRef.current.send(JSON.stringify({ type: "app:start" }));
+    setActivePanel(isWebType ? "preview" : "output");
+  };
+
+  const handleStopCode = async () => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    setAppBusy(true);
+    const synced = await syncOpenFileBeforeAction();
+    if (!synced) {
+      setAppBusy(false);
+      return;
+    }
+    wsRef.current.send(JSON.stringify({ type: "app:stop" }));
+  };
+
   const handleStop = async () => {
     if (!repl) return;
 
     setStopping(true);
     try {
+      const synced = await syncOpenFileBeforeAction();
+      if (!synced) {
+        setStopping(false);
+        return;
+      }
+
       await stopRepl(repl.id);
       intentionalCloseRef.current = true;
       wsRef.current?.close();
@@ -803,6 +1108,7 @@ export default function ReplEditorPage() {
     const userMsg: AiMessage = { role: "user", content: prompt };
     setAiMessages((prev) => [...prev, userMsg]);
     setGeneratingAi(true);
+    setActivePanel("ai");
 
     const history = aiMessages.map((m) =>
       m.role === "user"
@@ -827,13 +1133,16 @@ export default function ReplEditorPage() {
     try {
       await streamReplCode(
         repl.id,
-        { prompt, filePath: openFile, currentContent: fileContent, history },
+        { prompt, filePath: openFile, currentContent: originalContent, model: aiModel.trim() || undefined, history },
         (chunk) => { streamed += chunk; setStreamingText(streamed); },
         abort.signal,
       );
 
       setStreamingText(null);
-      const { content: patchedContent, response } = computeAiPatch(streamed);
+      const { content: patchedContent, response } = computeAiPatchFromResponse({
+        responseJson: streamed,
+        currentContent: originalContent,
+      });
 
       const assistantMsg: AiMessage =
         response.type === "chat"
@@ -848,7 +1157,7 @@ export default function ReplEditorPage() {
         // pure chat — no file change
       } else if (aiMode === "auto") {
         // auto: persist immediately, no pending state
-        applyFileReplacement(openFile, patchedContent);
+        applyFileReplacement(openFile, originalContent, patchedContent);
       } else {
         // ask: preview in editor (suppressed from WS), wait for user decision
         patchQueueRef.current.set(openFile, []);
@@ -869,7 +1178,7 @@ export default function ReplEditorPage() {
 
   const handleAiAccept = () => {
     if (pendingAiContent) {
-      applyFileReplacement(pendingAiContent.file, pendingAiContent.content);
+      applyFileReplacement(pendingAiContent.file, pendingAiContent.original, pendingAiContent.content);
     }
     setPendingAiContent(null);
     toast.success("AI changes accepted");
@@ -877,7 +1186,7 @@ export default function ReplEditorPage() {
 
   const handleAiYesBut = () => {
     if (pendingAiContent) {
-      applyFileReplacement(pendingAiContent.file, pendingAiContent.content);
+      applyFileReplacement(pendingAiContent.file, pendingAiContent.original, pendingAiContent.content);
     }
     setPendingAiContent(null);
     // InlineAiBar focuses input after this via requestAnimationFrame in onYesBut handler
@@ -885,7 +1194,7 @@ export default function ReplEditorPage() {
 
   const handleAiReject = () => {
     if (pendingAiContent) {
-      applyFileReplacement(pendingAiContent.file, pendingAiContent.original);
+      applyFileReplacement(pendingAiContent.file, pendingAiContent.content, pendingAiContent.original);
     }
     setPendingAiContent(null);
     toast.success("AI changes rejected");
@@ -899,9 +1208,6 @@ export default function ReplEditorPage() {
   const fileLanguage = EXT_LANG[ext] ?? editorLanguage;
 
   if (loading) return <EditorSkeleton />;
-
-  const activeAiCredential =
-    aiCredentials.find((credential) => credential.isActive) ?? null;
 
   return (
     <div className="flex flex-col h-screen bg-[#0d0d0f] overflow-hidden select-none">
@@ -964,6 +1270,22 @@ export default function ReplEditorPage() {
                 : "Stopped"}
         </Badge>
 
+        {status === "RUNNING" && (
+          <Badge
+            variant={appStatus === "running" ? "success" : appStatus === "error" ? "danger" : "default"}
+            dot={appStatus === "running" || appStatus === "starting"}
+            className="text-2xs"
+          >
+            {appStatus === "starting"
+              ? "Code starting"
+              : appStatus === "running"
+                ? "Code running"
+                : appStatus === "error"
+                  ? "Code error"
+                  : "Code idle"}
+          </Badge>
+        )}
+
         <div className="flex-1" />
 
         {isDirty && (
@@ -983,24 +1305,44 @@ export default function ReplEditorPage() {
               Save
             </Button>
             <Button
+              variant="primary"
+              size="sm"
+              onClick={handleRunCode}
+              loading={appBusy && appStatus === "starting"}
+              className="text-xs gap-1.5"
+            >
+              <PlayIcon /> {appStatus === "running" ? "Restart Code" : "Run Code"}
+            </Button>
+            {appStatus === "running" || appStatus === "starting" ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleStopCode}
+                loading={appBusy && appStatus !== "starting"}
+                className="text-white/60 hover:text-white text-xs"
+              >
+                Stop Code
+              </Button>
+            ) : null}
+            <Button
               variant="danger"
               size="sm"
               onClick={handleStop}
               loading={stopping}
               className="text-xs"
             >
-              Stop
+              Stop Pod
             </Button>
           </>
         ) : (
           <Button
             variant="primary"
             size="sm"
-            onClick={handleRun}
+            onClick={handleStartPod}
             loading={starting}
             className="text-xs gap-1.5"
           >
-            <PlayIcon /> Run
+            <PlayIcon /> Start Pod
           </Button>
         )}
       </header>
@@ -1065,7 +1407,7 @@ export default function ReplEditorPage() {
                     </div>
                     <div className="flex flex-col gap-1">
                       <span className="text-xs font-medium text-white/40">{status === "RUNNING" ? "Loading files..." : "No files yet"}</span>
-                      {status !== "RUNNING" && <p className="text-2xs text-white/20 leading-relaxed">Run repl to load workspace</p>}
+                      {status !== "RUNNING" && <p className="text-2xs text-white/20 leading-relaxed">Start pod to load workspace</p>}
                     </div>
                   </div>
                 ) : (
@@ -1138,14 +1480,17 @@ export default function ReplEditorPage() {
                           editorDisposeRef.current = editorRef.current.onDidChangeModelContent((event) => {
                             const activePath = openFileRef.current;
                             if (ignoreEditorChangesRef.current || !activePath || event.changes.length === 0) return;
-                            const queued = patchQueueRef.current.get(activePath) ?? [];
-                            queued.push(...event.changes.map((c) => ({ rangeOffset: c.rangeOffset, rangeLength: c.rangeLength, text: c.text })));
-                            patchQueueRef.current.set(activePath, queued);
+                            dirtyFilesRef.current.add(activePath);
                             setIsDirty(true);
                             schedulePatchFlush(activePath);
                           });
                         }}
-                        onChange={(value) => setFileContent(value ?? "")}
+                        onChange={(value) => {
+                          const nextValue = value ?? "";
+                          fileContentRef.current = nextValue;
+                          if (openFileRef.current) fileContentsCache.current.set(openFileRef.current, nextValue);
+                          setFileContent(nextValue);
+                        }}
                         options={{
                           fontSize: 13,
                           fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
@@ -1170,11 +1515,11 @@ export default function ReplEditorPage() {
                         </div>
                         <div className="flex flex-col gap-1.5">
                           <p className="text-sm font-medium text-white/40">{status === "RUNNING" ? "No file open" : "Repl not running"}</p>
-                          <p className="text-xs text-white/20">{status === "RUNNING" ? "Select a file from the explorer" : "Start the repl to load your files"}</p>
+                          <p className="text-xs text-white/20">{status === "RUNNING" ? "Select a file from the explorer" : "Start the pod to load your files"}</p>
                         </div>
                         {status !== "RUNNING" && (
-                          <Button variant="primary" size="sm" onClick={handleRun} loading={starting} className="gap-1.5">
-                            <PlayIcon /> Run Repl
+                          <Button variant="primary" size="sm" onClick={handleStartPod} loading={starting} className="gap-1.5">
+                            <PlayIcon /> Start Pod
                           </Button>
                         )}
                       </div>
@@ -1185,19 +1530,19 @@ export default function ReplEditorPage() {
 
               <ResizeHandleV />
 
-              {/* terminal + ai (tabbed) */}
+              {/* terminal */}
               <Panel defaultSize="30" minSize="8" collapsible collapsedSize="0">
                 <div className="flex flex-col h-full border-t border-white/8">
                   {/* tab bar */}
                   <div className="h-8 flex items-center border-b border-white/6 bg-[#0f0f12] shrink-0 px-1 gap-0.5">
-                    <PanelTab active={bottomTab === "terminal"} onClick={() => setBottomTab("terminal")}>
+                    <PanelTab active onClick={() => {
+                      fitAddonRef.current?.fit();
+                      xtermRef.current?.focus();
+                    }}>
                       <span className="flex items-center gap-1.5"><TerminalIcon />Terminal</span>
                     </PanelTab>
-                    <PanelTab active={bottomTab === "ai"} onClick={() => setBottomTab("ai")}>
-                      AI
-                    </PanelTab>
                     <div className="flex-1" />
-                    {bottomTab === "terminal" && status === "RUNNING" && (
+                    {status === "RUNNING" && (
                       <button
                         onClick={() => {
                           xtermRef.current?.clear();
@@ -1211,36 +1556,27 @@ export default function ReplEditorPage() {
                   </div>
 
                   {/* terminal pane */}
-                  <div className={`flex-1 min-h-0 overflow-hidden relative ${bottomTab === "terminal" ? "flex" : "hidden"} flex-col`}>
+                  <div className="flex-1 min-h-0 overflow-hidden relative flex flex-col">
                     <div ref={termRef} className="absolute inset-0" style={{ padding: "4px 8px" }} />
                     {status !== "RUNNING" && (
                       <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#0d0d0f]">
                         <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-white/4 border border-white/8 text-white/20">
                           <TerminalIcon />
                         </div>
-                        <p className="text-2xs text-white/25 font-mono">Run repl to start terminal</p>
+                        <p className="text-2xs text-white/25 font-mono">Start pod to open terminal</p>
+                      </div>
+                    )}
+                    {status === "RUNNING" && terminalError && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#0d0d0f] px-6 text-center">
+                        <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-red-500/10 border border-red-500/20 text-red-300">
+                          <TerminalIcon />
+                        </div>
+                        <p className="text-xs text-red-300 font-medium">Terminal failed to initialize</p>
+                        <p className="text-2xs text-white/35 font-mono break-all">{terminalError}</p>
                       </div>
                     )}
                   </div>
 
-                  {/* ai pane */}
-                  <div className={`flex-1 min-h-0 overflow-hidden ${bottomTab === "ai" ? "flex" : "hidden"} flex-col`}>
-                    <InlineAiBar
-                      openFile={openFile}
-                      activeCredential={activeAiCredential}
-                      mode={aiMode}
-                      messages={aiMessages}
-                      generating={generatingAi}
-                      streamingText={streamingText}
-                      hasPending={!!pendingAiContent}
-                      onModeChange={setAiMode}
-                      onSend={handleGenerateAi}
-                      onAccept={handleAiAccept}
-                      onReject={handleAiReject}
-                      onYesBut={handleAiYesBut}
-                      onOpenSettings={() => router.push("/dashboard/settings")}
-                    />
-                  </div>
                 </div>
               </Panel>
 
@@ -1258,6 +1594,7 @@ export default function ReplEditorPage() {
                 <PanelTab active={activePanel === "preview"} onClick={() => setActivePanel("preview")}>Preview</PanelTab>
               )}
               <PanelTab active={activePanel === "output"} onClick={() => setActivePanel("output")}>Output</PanelTab>
+              <PanelTab active={activePanel === "ai"} onClick={() => setActivePanel("ai")}>AI Chat</PanelTab>
               {previewUrl && (
                 <div className="ml-auto flex items-center gap-1 mr-1">
                   <button onClick={() => setPreviewFrameKey((k: number) => k + 1)} className="text-white/30 hover:text-white/70 transition-colors p-1" title="Refresh">
@@ -1283,14 +1620,16 @@ export default function ReplEditorPage() {
                   />
                 ) : (
                   <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-6">
-                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center border ${status === "RUNNING" ? "bg-(--brand)/10 border-(--brand)/20 text-(--brand)/50" : "bg-white/4 border-white/8 text-white/20"}`}>
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center border ${appStatus === "starting" ? "bg-(--brand)/10 border-(--brand)/20 text-(--brand)/50" : "bg-white/4 border-white/8 text-white/20"}`}>
                       <MonitorIcon />
                     </div>
                     <div className="flex flex-col gap-1">
-                      <p className="text-xs font-medium text-white/40">{status === "RUNNING" ? "Starting server..." : "No preview"}</p>
-                      <p className="text-2xs text-white/20">{status === "RUNNING" ? "Waiting for your app to boot" : "Run your repl to see a live preview"}</p>
+                      <p className="text-xs font-medium text-white/40">{appStatus === "starting" ? "Starting server..." : "No preview"}</p>
+                      <p className="text-2xs text-white/20">
+                        {status === "RUNNING" ? "Run code to see a live preview" : "Start the pod before running code"}
+                      </p>
                     </div>
-                    {status === "RUNNING" && (
+                    {appStatus === "starting" && (
                       <div className="flex gap-1.5 mt-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-(--brand)/50 animate-bounce [animation-delay:0ms]" />
                         <span className="w-1.5 h-1.5 rounded-full bg-(--brand)/50 animate-bounce [animation-delay:150ms]" />
@@ -1308,9 +1647,39 @@ export default function ReplEditorPage() {
                   <pre className="text-2xs text-white/65 font-mono whitespace-pre-wrap break-all leading-relaxed">{outputLog}</pre>
                 ) : (
                   <div className="flex items-center justify-center h-full">
-                    <p className="text-2xs text-white/25 font-mono italic">{status === "RUNNING" ? "Waiting for output..." : "No output yet — run your repl"}</p>
+                    <p className="text-2xs text-white/25 font-mono italic">
+                      {appStatus === "starting"
+                        ? "Starting code..."
+                        : appStatus === "running"
+                          ? "Waiting for output..."
+                          : status === "RUNNING"
+                            ? "No output yet - run code"
+                            : "No output yet - start the pod"}
+                    </p>
                   </div>
                 )}
+              </div>
+            )}
+
+            {activePanel === "ai" && (
+              <div className="flex-1 min-h-0 overflow-hidden">
+                <InlineAiBar
+                  openFile={openFile}
+                  activeCredential={activeAiCredential}
+                  model={aiModel}
+                  mode={aiMode}
+                  messages={aiMessages}
+                  generating={generatingAi}
+                  streamingText={streamingText}
+                  hasPending={!!pendingAiContent}
+                  onModelChange={setAiModel}
+                  onModeChange={setAiMode}
+                  onSend={handleGenerateAi}
+                  onAccept={handleAiAccept}
+                  onReject={handleAiReject}
+                  onYesBut={handleAiYesBut}
+                  onOpenSettings={() => router.push("/dashboard/keys")}
+                />
               </div>
             )}
           </div>

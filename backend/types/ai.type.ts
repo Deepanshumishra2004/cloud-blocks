@@ -33,6 +33,12 @@ export const GenerateReplCodeSchema = z.object({
   currentContent: z
     .string()
     .max(200_000, "File content is too large for a single generation request"),
+  model: z
+    .string()
+    .trim()
+    .min(1, "Model is required")
+    .max(120, "Model id is too long")
+    .optional(),
   fileTree: z.string().max(10_000).optional(),
   relatedFiles: z
     .array(z.object({ path: z.string(), content: z.string().max(50_000) }))

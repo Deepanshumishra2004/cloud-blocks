@@ -108,9 +108,9 @@ function BillingPageInner() {
       : null;
 
   return (
-    <div className="max-w-3xl mx-auto flex flex-col gap-8">
+    <div className="dashboard-shell max-w-4xl flex flex-col gap-8">
       <div>
-        <h1 className="text-xl font-semibold text-cb-primary tracking-tight">Billing</h1>
+        <h1 className="text-xl font-semibold text-cb-primary">Billing</h1>
         <p className="text-sm text-cb-secondary mt-1">Manage your plan, usage, and payment history.</p>
       </div>
 
@@ -124,7 +124,7 @@ function BillingPageInner() {
           <>
             <div className="flex items-center justify-between gap-4 flex-wrap">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-[var(--brand-subtle)] border border-[var(--brand-border)] flex items-center justify-center text-cb-primary">
+                <div className="pop-icon h-10 w-10 font-bold">
                   {currentPlan.label.slice(0, 1)}
                 </div>
                 <div>

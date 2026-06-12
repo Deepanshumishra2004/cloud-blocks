@@ -2,20 +2,19 @@
 // src/components/auth/OAuthButtons.tsx
 import { useState } from "react";
 import { cn } from "@/lib/cn";
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+import { getOAuthStartUrl } from "@/lib/auth-endpoints";
 
 type Provider = "google" | "github" | null;
 
 export function OAuthButtons({ label = "Continue" }: { label?: string }) {
   const [loading, setLoading] = useState<Provider>(null);
 
-  function redirect(provider: Provider) {
+  function redirect(provider: Exclude<Provider, null>) {
     if (loading) return; // prevent double-click
     setLoading(provider);
     // Small delay so the loading state renders before navigation
     setTimeout(() => {
-      window.location.href = `${API}/api/v1/user/${provider}`;
+      window.location.href = getOAuthStartUrl(provider);
     }, 120);
   }
 

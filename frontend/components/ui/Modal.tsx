@@ -115,7 +115,7 @@ function Modal({
                 "shrink-0 w-7 h-7 flex items-center justify-center rounded-md",
                 "text-cb-muted hover:text-cb-primary hover:bg-cb-hover",
                 "transition-colors duration-100",
-                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand"
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
               )}
               aria-label="Close"
             >

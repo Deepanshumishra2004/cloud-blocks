@@ -44,7 +44,7 @@ export default function SettingsPage() {
     name: string;
     apiKey: string;
   }>({
-    provider: "GEMINI",
+    provider: "OPENROUTER",
     name: "",
     apiKey: "",
   });
@@ -236,9 +236,9 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto flex flex-col gap-8">
+    <div className="dashboard-shell max-w-3xl flex flex-col gap-8">
       <div>
-        <h1 className="text-xl font-semibold text-cb-primary tracking-tight">Settings</h1>
+        <h1 className="text-xl font-semibold text-cb-primary">Settings</h1>
         <p className="text-sm text-cb-secondary mt-1">Manage your profile and account security.</p>
       </div>
 

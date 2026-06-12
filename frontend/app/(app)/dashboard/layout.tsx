@@ -18,8 +18,8 @@ import {
 } from "@/components/ui/Dropdown";
 
 const NAV_MAIN = [
-  { href: "/dashboard",         icon: <HomeIcon />,  label: "Home"     },
-  { href: "/dashboard/repls",   icon: <CodeIcon />,  label: "My Repls" },
+  { href: "/dashboard",         icon: <HomeIcon />,  label: "Overview" },
+  { href: "/dashboard/repls",   icon: <CodeIcon />,  label: "Repls"    },
   { href: "/dashboard/explore", icon: <GridIcon />,  label: "Explore"  },
 ];
 const NAV_ACCOUNT = [
@@ -79,7 +79,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <SidebarActions>
           <Link
             href="/dashboard/repls?new=1"
-            className="flex items-center justify-center gap-2 w-full h-8 rounded-md bg-brand text-[#111] text-xs font-bold hover:bg-brand-hover active:scale-[0.98] transition-all duration-100 select-none"
+            className="button-shine flex h-10 w-full select-none items-center justify-center gap-2 rounded-md border border-[var(--brand-border)] bg-[linear-gradient(135deg,var(--brand),var(--brand-strong))] text-sm font-semibold text-white shadow-[0_16px_38px_color-mix(in_srgb,var(--brand)_24%,transparent)] transition-all duration-150 hover:-translate-y-0.5 hover:border-[var(--brand-hover)] active:scale-[0.98]"
           >
             <span className="text-sm leading-none font-bold">+</span>
             New Repl
@@ -143,7 +143,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             />
           }
         />
-        <main className="flex-1 p-6 overflow-auto">
+        <main className="flex-1 overflow-auto px-6 py-7 lg:px-8">
           {children}
         </main>
       </div>
@@ -159,7 +159,7 @@ function UserMenu({ user, initials, onSignout, onSettings, onBilling }: {
     <DropdownMenu>
       <DropdownMenuTrigger>
         <button
-          className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-[var(--cb-bg-hover)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand"
+          className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-[var(--cb-bg-hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
           aria-label="User menu"
         >
           <Avatar initials={initials} src={user.avatar ?? undefined} size="sm" />
@@ -184,12 +184,12 @@ function UserMenu({ user, initials, onSignout, onSettings, onBilling }: {
 function DashboardSkeleton() {
   return (
     <div className="min-h-screen bg-[var(--cb-bg-page)] flex">
-      <div className="fixed left-0 top-0 bottom-0 w-[228px] bg-[var(--cb-bg-surface)] border-r border-cb flex flex-col gap-3 p-3">
+      <div className="fixed left-0 top-0 bottom-0 w-[var(--sidebar-width)] bg-[var(--cb-bg-surface)] border-r border-cb flex flex-col gap-3 p-3">
         <Skeleton height={36} />
         <Skeleton height={32} />
         {[0,1,2,3,4].map((i) => <Skeleton key={i} height={30} className="opacity-50" />)}
       </div>
-      <div className="flex-1 ml-[228px]">
+      <div className="flex-1" style={{ marginLeft: "var(--sidebar-width)" }}>
         <div className="h-[52px] bg-[var(--cb-bg-surface)] border-b border-cb" />
         <div className="p-6 flex flex-col gap-6">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

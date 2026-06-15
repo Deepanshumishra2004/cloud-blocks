@@ -10,7 +10,14 @@ import {
   stopRepl,
   updateRepl,
 } from "../controller/repl.controller";
-import { generateReplCode, streamReplCode } from "../controller/ai.controller";
+import {
+  abortAgent,
+  answerAgentQuestion,
+  approveAgentAction,
+  generateReplCode,
+  streamReplAgent,
+  streamReplCode,
+} from "../controller/ai.controller";
 
 const replRoutes = Router();
 
@@ -22,6 +29,10 @@ replRoutes.post("/:replId/start", authMiddleware, startRepl);
 replRoutes.post("/:replId/stop", authMiddleware, stopRepl);
 replRoutes.post("/:replId/ai/generate", authMiddleware, aiRateLimit, generateReplCode);
 replRoutes.post("/:replId/ai/stream", authMiddleware, aiRateLimit, streamReplCode);
+replRoutes.post("/:replId/ai/agent", authMiddleware, aiRateLimit, streamReplAgent);
+replRoutes.post("/:replId/ai/agent/approve", authMiddleware, approveAgentAction);
+replRoutes.post("/:replId/ai/agent/answer", authMiddleware, answerAgentQuestion);
+replRoutes.post("/:replId/ai/agent/abort", authMiddleware, abortAgent);
 replRoutes.delete("/delete/:replId", authMiddleware, deleteRepl);
 
 export default replRoutes;

@@ -261,7 +261,10 @@ export const startRepl = async (req: Request, res: Response) => {
     });
   } catch (err) {
     logger.error({ err: err }, "[startRepl]");
-    return res.status(500).json({ message: "Failed to start repl" , error : `err` });
+    return res.status(500).json({
+      message: "Failed to start repl",
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 };
 

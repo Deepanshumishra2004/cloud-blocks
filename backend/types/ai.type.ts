@@ -13,10 +13,38 @@ export const CreateAiCredentialSchema = z.object({
     .trim()
     .min(8, "API key looks too short")
     .max(512, "API key is too long"),
+  baseUrl: z
+    .string()
+    .trim()
+    .url("Base URL must be a valid URL")
+    .max(300, "Base URL is too long")
+    .optional(),
 });
 
 export const ActivateAiCredentialSchema = z.object({
   credentialId: z.string().uuid("Invalid credential id"),
+});
+
+export const AgentRunSchema = z.object({
+  task: z.string().trim().min(4, "Task is too short").max(8000, "Task is too long"),
+  mode: z.enum(["auto", "ask"]).default("ask"),
+  model: z.string().trim().min(1).max(120).optional(),
+});
+
+export const AgentApproveSchema = z.object({
+  runId: z.string().uuid("Invalid run id"),
+  toolUseId: z.string().min(1).max(200),
+  allow: z.boolean(),
+});
+
+export const AgentAbortSchema = z.object({
+  runId: z.string().uuid("Invalid run id"),
+});
+
+export const AgentAnswerSchema = z.object({
+  runId: z.string().uuid("Invalid run id"),
+  questionId: z.string().min(1).max(200),
+  answers: z.array(z.string().max(2000)).max(10),
 });
 
 export const GenerateReplCodeSchema = z.object({

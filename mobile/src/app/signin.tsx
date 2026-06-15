@@ -9,6 +9,7 @@ import { AuthInput } from '@/features/auth/components/auth-input';
 import { AuthPage } from '@/features/auth/components/auth-page';
 import { FormField } from '@/features/auth/components/form-field';
 import { OAuthButtons } from '@/features/auth/components/oauth-buttons';
+import { useAuth } from '@/features/auth/auth-store';
 import { useAppTheme } from '@/features/theme/app-theme';
 
 export default function SignInScreen() {
@@ -16,15 +17,25 @@ export default function SignInScreen() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const { mode, isDark, toggleTheme } = useAppTheme();
+  const { signIn } = useAuth();
 
-  function submit() {
+  async function submit() {
     setError('');
     if (!email.trim() || !password) {
       setError('Enter your email and password.');
       return;
     }
-    router.replace('/dashboard');
+    setSubmitting(true);
+    try {
+      await signIn(email.trim().toLowerCase(), password);
+      router.replace('/dashboard');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sign in failed. Try again.');
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -68,8 +79,13 @@ export default function SignInScreen() {
           />
         </FormField>
 
-        <Pressable onPress={submit} className="mt-1 h-11 items-center justify-center rounded-md border border-brand-hover bg-brand active:opacity-80">
-          <Text className="text-sm font-black text-white">Sign in →</Text>
+        <Pressable
+          onPress={submit}
+          disabled={submitting}
+          className="mt-1 h-11 items-center justify-center rounded-md border border-brand-hover bg-brand active:opacity-80"
+          style={submitting ? { opacity: 0.6 } : undefined}
+        >
+          <Text className="text-sm font-black text-white">{submitting ? 'Signing in…' : 'Sign in →'}</Text>
         </Pressable>
       </View>
 

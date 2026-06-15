@@ -388,4 +388,94 @@ export async function streamReplCode(
   return { provider: "", credentialName: "" };
 }
 
+// ── AI agent (multi-step tool-using coding agent) ──────────────────────────
+import type { AgentEvent, AgentMode } from "@/components/replEditor/_lib/agentEvents";
+
+/** Run the agent. Streams AgentEvents to `onEvent`; resolves when the run ends. */
+export async function streamReplAgent(
+  replId: string,
+  payload: { task: string; mode: AgentMode; model?: string },
+  onEvent: (event: AgentEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const csrf = readCookie(CSRF_COOKIE);
+  const response = await fetch(`${API_BASE_URL}/api/v1/repl/${replId}/ai/agent`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(csrf ? { [CSRF_HEADER]: csrf } : {}),
+    },
+    body: JSON.stringify(payload),
+    signal,
+  });
+
+  if (!response.ok || !response.body) {
+    const err = (await response.json().catch(() => ({}))) as { message?: string };
+    throw new Error(err.message ?? "Agent failed to start");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const json = line.slice(6).trim();
+      if (!json) continue;
+      try {
+        onEvent(JSON.parse(json) as AgentEvent);
+      } catch {
+        /* ignore malformed frame */
+      }
+    }
+  }
+}
+
+export async function approveAgentAction(
+  replId: string,
+  runId: string,
+  toolUseId: string,
+  allow: boolean,
+): Promise<void> {
+  const csrf = readCookie(CSRF_COOKIE);
+  await fetch(`${API_BASE_URL}/api/v1/repl/${replId}/ai/agent/approve`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...(csrf ? { [CSRF_HEADER]: csrf } : {}) },
+    body: JSON.stringify({ runId, toolUseId, allow }),
+  });
+}
+
+export async function answerAgentQuestion(
+  replId: string,
+  runId: string,
+  questionId: string,
+  answers: string[],
+): Promise<void> {
+  const csrf = readCookie(CSRF_COOKIE);
+  await fetch(`${API_BASE_URL}/api/v1/repl/${replId}/ai/agent/answer`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...(csrf ? { [CSRF_HEADER]: csrf } : {}) },
+    body: JSON.stringify({ runId, questionId, answers }),
+  });
+}
+
+export async function abortAgentRun(replId: string, runId: string): Promise<void> {
+  const csrf = readCookie(CSRF_COOKIE);
+  await fetch(`${API_BASE_URL}/api/v1/repl/${replId}/ai/agent/abort`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...(csrf ? { [CSRF_HEADER]: csrf } : {}) },
+    body: JSON.stringify({ runId }),
+  });
+}
+
 export default api;

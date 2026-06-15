@@ -52,6 +52,10 @@ enum AiProvider {
   OPENAI
   ANTHROPIC
   DEEPSEEK
+  QWEN
+  ZHIPU
+  KIMI
+  MINIMAX
 }
 
 enum PlanName {
@@ -88,6 +92,9 @@ model AiCredential {
   name         String
   encryptedKey String
   last4        String
+  // Optional override for the provider's API base URL (self-host / regional
+  // gateway / any OpenAI-compatible endpoint). Falls back to the registry default.
+  baseUrl      String?
   isActive     Boolean    @default(false)
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt

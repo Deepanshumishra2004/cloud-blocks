@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react';
 
-import type { AppSection } from '../app-types';
+import { useAuth } from '@/features/auth/auth-store';
+import type { AppSection, User } from '../app-types';
 import { AppShell } from '../components/app-shell';
-import { USER } from '../data/static-data';
 
 const TITLES: Record<AppSection, string> = {
   dashboard: 'Account home',
@@ -13,9 +13,20 @@ const TITLES: Record<AppSection, string> = {
   settings: 'Settings',
 };
 
+const PLACEHOLDER_USER: User = {
+  id: '',
+  email: '',
+  username: 'Account',
+  provider: 'EMAIL',
+  avatar: null,
+  createdAt: '',
+  updatedAt: '',
+};
+
 export function WorkspaceScreen({ section, children }: { section: AppSection; children: ReactNode }) {
+  const { user } = useAuth();
   return (
-    <AppShell activeSection={section} title={TITLES[section]} user={USER}>
+    <AppShell activeSection={section} title={TITLES[section]} user={user ?? PLACEHOLDER_USER}>
       {children}
     </AppShell>
   );

@@ -102,14 +102,28 @@ function clearAuthCookies(res: Response) {
 }
 
 // Issue a fresh access+refresh pair, install cookies + CSRF cookie, track
-// the refresh jti in Redis so it can be rotated/revoked.
-async function issueAuthTokens(res: Response, userId: string): Promise<void> {
+// the refresh jti in Redis so it can be rotated/revoked. Returns the raw
+// tokens so native clients (mobile) that can't use httpOnly cookies can store
+// them in SecureStore and send Authorization: Bearer.
+async function issueAuthTokens(
+  res: Response,
+  userId: string,
+): Promise<{ accessToken: string; refreshToken: string }> {
   const access  = signAccessToken(userId);
   const refresh = signRefreshToken(userId);
   await trackRefreshToken(refresh.jti, userId);
   setAccessCookie(res, access.token);
   setRefreshCookie(res, refresh.token);
   setCsrfCookie(res, generateCsrfToken());
+  return { accessToken: access.token, refreshToken: refresh.token };
+}
+
+// Native clients send `X-Client: mobile` and receive tokens in the JSON body
+// instead of relying on cookies.
+function wantsTokens(req: Request): boolean {
+  const header = req.headers["x-client"];
+  const value = Array.isArray(header) ? header[0] : header;
+  return value?.toLowerCase() === "mobile";
 }
 
 async function ensureFreeSubscriptionForUser(db: any, userId: string): Promise<void> {
@@ -198,8 +212,12 @@ export const signup = async (req: Request, res: Response) => {
       return created;
     });
 
-    await issueAuthTokens(res, user.id);
-    return res.status(201).json({ message: "Account created", user });
+    const tokens = await issueAuthTokens(res, user.id);
+    return res.status(201).json({
+      message: "Account created",
+      user,
+      ...(wantsTokens(req) ? { tokens } : {}),
+    });
   } catch (err) {
     logger.error({ err: err }, "[signup]");
     return res.status(500).json({ message: "Signup failed" });
@@ -240,7 +258,7 @@ export const signin = async (req: Request, res: Response) => {
       return res.status(401).json({ message: "Invalid email or password" });
     }
 
-    await issueAuthTokens(res, user.id);
+    const tokens = await issueAuthTokens(res, user.id);
 
     return res.status(200).json({
       message: "Signed in",
@@ -251,6 +269,7 @@ export const signin = async (req: Request, res: Response) => {
         avatar: user.avatar,
         provider: user.provider,
       },
+      ...(wantsTokens(req) ? { tokens } : {}),
     });
   } catch (err) {
     logger.error({ err: err }, "[signin]");
@@ -306,9 +325,11 @@ export const signout = async (req: Request, res: Response) => {
 
 export const refresh = async (req: Request, res: Response) => {
   try {
+    // Mobile clients have no cookie jar — they send the refresh token in the body.
     const cookieToken =
       req.cookies?.cb_refresh ??
-      req.headers.cookie?.match(/cb_refresh=([^;]+)/)?.[1];
+      req.headers.cookie?.match(/cb_refresh=([^;]+)/)?.[1] ??
+      (typeof req.body?.refreshToken === "string" ? req.body.refreshToken : undefined);
 
     if (!cookieToken) {
       return res.status(401).json({ message: "No refresh token", code: "REFRESH_MISSING" });
@@ -334,8 +355,8 @@ export const refresh = async (req: Request, res: Response) => {
       return res.status(401).json({ message: "Session expired, please sign in again", code: "REFRESH_REUSE" });
     }
 
-    await issueAuthTokens(res, userId);
-    return res.json({ ok: true });
+    const tokens = await issueAuthTokens(res, userId);
+    return res.json({ ok: true, ...(wantsTokens(req) ? { tokens } : {}) });
   } catch (err) {
     logger.error({ err }, "[refresh]");
     return res.status(500).json({ message: "Refresh failed" });

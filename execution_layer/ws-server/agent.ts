@@ -1,7 +1,9 @@
 import axios from "axios";
+import { spawn } from "child_process";
 import { createRequire } from "module";
 import fs from "fs";
 import http from "http";
+import net from "net";
 import jwt from "jsonwebtoken";
 import path from "path";
 import { createClient } from "redis";
@@ -81,7 +83,9 @@ type ClientMessage =
       path: string;
       version?: number;
       changes: FilePatchChange[];
-    };
+    }
+  | { type: "exec"; id: string; command: string }
+  | { type: "exec:cancel"; id: string };
 
 type ServerMessage =
   | { type: "status"; status: "RUNNING" | "STOPPED" }
@@ -93,9 +97,15 @@ type ServerMessage =
   | { type: "file:written"; path: string; version: number }
   | { type: "file:sync-required"; path: string; content: string; version: number }
   | { type: "file:patched"; path: string; version: number }
+  // pushed to OTHER clients when any client writes/patches a file, so every
+  // connected editor (web + mobile) stays in sync in real time
+  | { type: "file:changed"; path: string; content: string; version: number }
   | { type: "file:renamed"; oldPath: string; newPath: string }
   | { type: "preview:url"; url: string }
   | { type: "preview:log"; data: string }
+  // one-shot command execution driven by the AI agent (backend control channel)
+  | { type: "exec:output"; id: string; data: string }
+  | { type: "exec:exit"; id: string; code: number | null; signal: string | null; truncated: boolean }
   | { type: "error"; message: string };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -209,6 +219,105 @@ const sendJson = (ws: WebSocket, message: ServerMessage) => {
 
 const broadcastJson = (message: ServerMessage) => {
   for (const client of clients) sendJson(client, message);
+};
+
+// Notify every client EXCEPT the originator that a file's content changed.
+// Keeps multiple open editors (e.g. web + mobile on the same repl) in sync.
+const broadcastFileChanged = (
+  path: string,
+  content: string,
+  version: number,
+  except: WebSocket | null,
+) => {
+  for (const client of clients) {
+    if (client === except) continue;
+    sendJson(client, { type: "file:changed", path, content, version });
+  }
+};
+
+// ── Agent command execution ────────────────────────────────────────────────
+// One-shot commands the AI agent runs (via the backend control channel). Runs
+// as the unprivileged `sandbox` user — same boundary as the terminal, so it
+// cannot read ws-server secrets or escape the sandbox. Output is streamed back,
+// capped, and killed on timeout.
+const EXEC_TIMEOUT_MS = 120_000;
+const EXEC_MAX_OUTPUT_BYTES = 256 * 1024;
+
+type RunningExec = { kill: () => void };
+const runningExecs = new Map<string, RunningExec>();
+
+const runExec = (ws: WebSocket, id: string, command: string): void => {
+  if (runningExecs.has(id)) {
+    sendJson(ws, { type: "error", message: `exec ${id} already running` });
+    return;
+  }
+
+  const child = spawn("su", ["-s", "/bin/bash", "sandbox", "-c", command], {
+    cwd: WORKSPACE,
+    detached: true,
+    env: {
+      HOME: "/home/sandbox",
+      PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      TERM: "xterm-256color",
+      REPL_ID,
+      REPL_TYPE,
+      USER: "sandbox",
+      LOGNAME: "sandbox",
+    },
+  });
+
+  let sentBytes = 0;
+  let truncated = false;
+  let finished = false;
+
+  const killTree = () => {
+    try {
+      if (child.pid) process.kill(-child.pid, "SIGKILL");
+      else child.kill("SIGKILL");
+    } catch {
+      child.kill("SIGKILL");
+    }
+  };
+
+  const timer = setTimeout(() => {
+    truncated = true;
+    sendJson(ws, { type: "exec:output", id, data: "\n[command timed out]\n" });
+    killTree();
+  }, EXEC_TIMEOUT_MS);
+
+  const onData = (buf: Buffer) => {
+    if (truncated) return;
+    let text = buf.toString();
+    if (sentBytes + text.length > EXEC_MAX_OUTPUT_BYTES) {
+      text = text.slice(0, Math.max(0, EXEC_MAX_OUTPUT_BYTES - sentBytes));
+      truncated = true;
+    }
+    sentBytes += text.length;
+    if (text) sendJson(ws, { type: "exec:output", id, data: text });
+    if (truncated) {
+      sendJson(ws, { type: "exec:output", id, data: "\n[output truncated]\n" });
+      killTree();
+    }
+  };
+
+  child.stdout.on("data", onData);
+  child.stderr.on("data", onData);
+
+  const finish = (code: number | null, signal: string | null) => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
+    runningExecs.delete(id);
+    sendJson(ws, { type: "exec:exit", id, code, signal, truncated });
+  };
+
+  child.on("error", (err) => {
+    sendJson(ws, { type: "exec:output", id, data: `\n[exec error: ${err.message}]\n` });
+    finish(null, null);
+  });
+  child.on("exit", (code, signal) => finish(code, signal));
+
+  runningExecs.set(id, { kill: killTree });
 };
 
 const pushTerminalHistory = (data: string) => {
@@ -503,6 +612,38 @@ const syncWorkspaceSnapshot = async (): Promise<void> => {
   }
 };
 
+// ── Snapshot-on-edit ────────────────────────────────────────────────────────
+// The 60s interval is a backstop. A pod can be SIGKILLed or idle-evicted long
+// before it fires, losing recent edits. So we also snapshot a few seconds after
+// the last write. Guard against overlap; if writes land mid-snapshot, re-run.
+const SNAPSHOT_DEBOUNCE_MS = 4_000;
+let snapshotDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let snapshotInFlight = false;
+let snapshotPendingAgain = false;
+
+const runSnapshotSafe = async (): Promise<void> => {
+  if (snapshotInFlight) { snapshotPendingAgain = true; return; }
+  snapshotInFlight = true;
+  try {
+    do {
+      snapshotPendingAgain = false;
+      await syncWorkspaceSnapshot();
+    } while (snapshotPendingAgain);
+  } catch (e) {
+    console.error("[snapshot] edit-triggered snapshot failed:", e);
+  } finally {
+    snapshotInFlight = false;
+  }
+};
+
+const scheduleSnapshot = (): void => {
+  if (snapshotDebounceTimer) clearTimeout(snapshotDebounceTimer);
+  snapshotDebounceTimer = setTimeout(() => {
+    snapshotDebounceTimer = null;
+    void runSnapshotSafe();
+  }, SNAPSHOT_DEBOUNCE_MS);
+};
+
 // ── Preview log tail ──────────────────────────────────────────────────────────
 
 const ensurePreviewLogState = (): void => {
@@ -652,6 +793,7 @@ const shutdown = async (): Promise<void> => {
   clearInterval(activeInterval);
   clearPreviewProbe();
   if (fileWatchDebounce) clearTimeout(fileWatchDebounce);
+  if (snapshotDebounceTimer) clearTimeout(snapshotDebounceTimer);
   workspaceWatcher?.close();
   await appRuntime.stop();
   sharedPty?.kill("SIGTERM");
@@ -790,6 +932,8 @@ wss.on("connection", (ws, req) => {
           const result = await writeVersionedFile(relativePath, msg.version, msg.content);
           if (result.ok) {
             sendJson(ws, { type: "file:written", path: relativePath, version: result.version });
+            broadcastFileChanged(relativePath, msg.content, result.version, ws);
+            scheduleSnapshot();
           } else {
             const content = await readWorkspaceFile(relativePath);
             sendJson(ws, {
@@ -807,6 +951,9 @@ wss.on("connection", (ws, req) => {
           try {
             const version = await applyQueuedPatch(relativePath, msg.version, msg.changes);
             sendJson(ws, { type: "file:patched", path: relativePath, version });
+            const updated = await readWorkspaceFile(relativePath);
+            broadcastFileChanged(relativePath, updated, version, ws);
+            scheduleSnapshot();
           } catch (error) {
             if (!isPatchSyncRequiredError(error)) throw error;
             const content = await readWorkspaceFile(relativePath);
@@ -824,9 +971,11 @@ wss.on("connection", (ws, req) => {
           const relativePath = normalizeRelativePath(msg.path);
           const fullPath = workspacePath(relativePath);
           if (!fs.existsSync(fullPath)) {
-            await setWorkspaceFile(relativePath, msg.content ?? "");
+            const version = await setWorkspaceFile(relativePath, msg.content ?? "");
+            broadcastFileChanged(relativePath, msg.content ?? "", version, ws);
           }
           broadcastJson({ type: "file:list", tree: buildFileTree(WORKSPACE) });
+          scheduleSnapshot();
           break;
         }
 
@@ -834,6 +983,7 @@ wss.on("connection", (ws, req) => {
           const relativePath = normalizeRelativePath(msg.path);
           await deleteWorkspaceFile(relativePath);
           broadcastJson({ type: "file:list", tree: buildFileTree(WORKSPACE) });
+          scheduleSnapshot();
           break;
         }
 
@@ -843,6 +993,19 @@ wss.on("connection", (ws, req) => {
           await renameWorkspaceFile(oldRelative, newRelative);
           broadcastJson({ type: "file:renamed", oldPath: oldRelative, newPath: newRelative });
           broadcastJson({ type: "file:list", tree: buildFileTree(WORKSPACE) });
+          scheduleSnapshot();
+          break;
+        }
+
+        // ── Agent exec ──────────────────────────────────────────────────────
+        case "exec": {
+          if (typeof msg.command === "string" && msg.command.trim()) {
+            runExec(ws, msg.id, msg.command);
+          }
+          break;
+        }
+        case "exec:cancel": {
+          runningExecs.get(msg.id)?.kill();
           break;
         }
 
@@ -868,23 +1031,58 @@ wss.on("connection", (ws, req) => {
 
 const appPort = TEMPLATE_APP_PORTS[REPL_TYPE] ?? 3000;
 
-http
-  .createServer(async (req, res) => {
-    try {
-      const hasBody = req.method !== "GET" && req.method !== "HEAD";
-      const response = await axios({
-        method: req.method as string,
-        url: `http://localhost:${appPort}${req.url}`,
-        headers: { ...req.headers, host: `localhost:${appPort}` },
-        data: hasBody ? req : undefined,
-        responseType: "stream",
-        validateStatus: () => true,
-      });
-      res.writeHead(response.status, response.headers as http.OutgoingHttpHeaders);
-      (response.data as NodeJS.ReadableStream).pipe(res);
-    } catch {
-      res.writeHead(502);
-      res.end("Preview not ready");
+const previewServer = http.createServer(async (req, res) => {
+  try {
+    const hasBody = req.method !== "GET" && req.method !== "HEAD";
+    const response = await axios({
+      method: req.method as string,
+      url: `http://localhost:${appPort}${req.url}`,
+      headers: { ...req.headers, host: `localhost:${appPort}` },
+      data: hasBody ? req : undefined,
+      responseType: "stream",
+      validateStatus: () => true,
+    });
+    res.writeHead(response.status, response.headers as http.OutgoingHttpHeaders);
+    (response.data as NodeJS.ReadableStream).pipe(res);
+  } catch {
+    res.writeHead(502);
+    res.end("Preview not ready");
+  }
+});
+
+// Proxy WebSocket upgrades (Vite & Next dev HMR/fast-refresh sockets) to the app
+// dev server. axios cannot carry an Upgrade, so without this live reload is dead.
+// Raw socket piping avoids adding a proxy dependency to the pod image.
+previewServer.on("upgrade", (req, clientSocket, head) => {
+  const upstream = net.connect(appPort, "localhost", () => {
+    const headerLines = [`${req.method} ${req.url} HTTP/1.1`];
+    const headers = req.headers;
+    for (const key of Object.keys(headers)) {
+      const value = headers[key];
+      if (value === undefined) continue;
+      // rewrite host so the dev server's own host checks pass
+      if (key.toLowerCase() === "host") {
+        headerLines.push(`host: localhost:${appPort}`);
+        continue;
+      }
+      if (Array.isArray(value)) {
+        for (const v of value) headerLines.push(`${key}: ${v}`);
+      } else {
+        headerLines.push(`${key}: ${value}`);
+      }
     }
-  })
-  .listen(PREVIEW_PORT);
+    upstream.write(headerLines.join("\r\n") + "\r\n\r\n");
+    if (head && head.length) upstream.write(head);
+    upstream.pipe(clientSocket);
+    clientSocket.pipe(upstream);
+  });
+
+  const destroy = () => {
+    upstream.destroy();
+    clientSocket.destroy();
+  };
+  upstream.on("error", destroy);
+  clientSocket.on("error", destroy);
+});
+
+previewServer.listen(PREVIEW_PORT);

@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { logger } from "../lib/logger";
 import { getOrCreateActiveSubscription, getUserReplUsage } from "../services/plan-limits.service";
+import { getUserStorageUsageMB } from "../services/repl-storage.service";
 
 /* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    GET ALL PLANS  GET /api/v1/plan/all
@@ -122,12 +123,17 @@ export const getUserUsage = async (req: Request, res: Response) => {
 
     const { replCount, subscription, maxRepls, maxStorageMB } = await getUserReplUsage(userId);
 
-    // Storage and compute are placeholders â€” wire up real metrics
-    // once your sandbox layer tracks them (e.g. via K8s resource usage API)
+    // Real storage usage = sum of object sizes under the user's R2 workspace prefix.
+    // Compute hours remain a placeholder until the sandbox layer tracks runtime.
+    const usedMb = await getUserStorageUsageMB(userId).catch((err) => {
+      logger.error({ err }, "[getUserUsage] storage usage lookup failed");
+      return 0;
+    });
+
     return res.json({
       usage: {
-        repls:   { used: replCount,  max: maxRepls     },
-        storage: { usedMb: 0,        maxMb: maxStorageMB },
+        repls:   { used: replCount,  max: maxRepls       },
+        storage: { usedMb,           maxMb: maxStorageMB  },
         compute: { usedHrs: 0,       maxHrs: subscription ? 100 : 10 },
       },
     });

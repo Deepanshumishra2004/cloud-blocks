@@ -27,6 +27,33 @@ const TEMPLATE_NAME_BY_REPL_TYPE: Record<string, string> = {
 export const getTemplateNameForReplType = (replType: string) =>
   TEMPLATE_NAME_BY_REPL_TYPE[replType] ?? replType.toLowerCase();
 
+// Sum the byte size of every object under a user's workspace prefix in R2,
+// returned in megabytes. Used by the usage meter. Returns 0 if R2 isn't
+// configured. Paginates so users with many files are counted fully.
+export const getUserStorageUsageMB = async (userId: string): Promise<number> => {
+  if (!s3 || !S3_BUCKET) return 0;
+
+  const prefix = `workspace/${userId}/`;
+  let totalBytes = 0;
+  let continuationToken: string | undefined;
+
+  do {
+    const page = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: S3_BUCKET,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      }),
+    );
+    for (const item of page.Contents ?? []) {
+      totalBytes += item.Size ?? 0;
+    }
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  return Math.round(totalBytes / (1024 * 1024));
+};
+
 export const seedReplFromTemplate = async (replId: string, replType: string, userId: string) => {
   if (!s3 || !S3_BUCKET) {
     logger.warn("[seedReplFromTemplate] R2 storage is not configured, skipping seed");

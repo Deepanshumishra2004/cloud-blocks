@@ -58,10 +58,22 @@ export function getAppRunCommand(args: RunCommandArgs): string {
   }
 
   if (type === "next") {
+    const previewHost =
+      args.previewHost ??
+      (() => {
+        try {
+          return process.env.PREVIEW_URL ? new URL(process.env.PREVIEW_URL).host : "";
+        } catch {
+          return "";
+        }
+      })();
     return [
       "set -euo pipefail",
       install.trimEnd(),
       "export HOSTNAME=0.0.0.0",
+      // Next 15+/16 block cross-origin dev requests (HMR, dev scripts) unless the
+      // preview host is allow-listed. next.config.ts reads PREVIEW_HOST into allowedDevOrigins.
+      previewHost ? `export PREVIEW_HOST=${shellQuote(previewHost)}` : "",
       `bun x next dev --hostname 0.0.0.0 -p ${NEXT_PREVIEW_PORT}`,
     ].filter(Boolean).join("\n");
   }

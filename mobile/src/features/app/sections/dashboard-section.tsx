@@ -1,12 +1,25 @@
 import { router } from 'expo-router';
+import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 
+import { api } from '@/lib/api';
+import type { Usage } from '../app-types';
 import { ReplCard } from '../components/repl-card';
-import { PLAN, REPLS, USAGE } from '../data/static-data';
+import { useRepls } from '../hooks/use-repls';
 import { Button, HeroPanel, MetricCard, SectionHeader } from '../ui/primitives';
 
 export function DashboardSection() {
-  const running = REPLS.filter((repl) => repl.status === 'RUNNING').length;
+  const { repls } = useRepls();
+  const [usage, setUsage] = useState<Usage | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getUsage().then((u) => { if (!cancelled) setUsage(u); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const running = repls.filter((repl) => repl.status === 'RUNNING').length;
+  const storageGb = usage ? `${Math.round(usage.storage.usedMb / 1024)}GB` : '—';
 
   return (
     <View className="gap-5">
@@ -17,17 +30,17 @@ export function DashboardSection() {
       />
 
       <View className="flex-row gap-3">
-        <MetricCard label="Total repls" value={String(REPLS.length)} tone="lime" />
+        <MetricCard label="Total repls" value={String(repls.length)} tone="lime" />
         <MetricCard label="Running" value={String(running)} tone="orange" />
       </View>
       <View className="flex-row gap-3">
-        <MetricCard label="Storage" value={`${Math.round(USAGE.storage.usedMb / 1024)}GB`} tone="pink" />
-        <MetricCard label="Plan" value={PLAN.name} tone="brand" />
+        <MetricCard label="Storage" value={storageGb} tone="pink" />
+        <MetricCard label="Repls used" value={usage ? `${usage.repls.used}/${usage.repls.max}` : '—'} tone="brand" />
       </View>
 
       <SectionHeader title="Recent repls" action="View all" onPress={() => router.push('/repls')} />
       <View className="gap-3">
-        {REPLS.slice(0, 2).map((repl) => (
+        {repls.slice(0, 2).map((repl) => (
           <ReplCard key={repl.id} repl={repl} />
         ))}
       </View>

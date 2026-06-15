@@ -49,6 +49,14 @@ export const csrfMiddleware = (req: Request, res: Response, next: NextFunction) 
   if (SAFE_METHODS.has(req.method)) return next();
   if (EXEMPT_PREFIXES.some((p) => req.originalUrl.startsWith(p))) return next();
 
+  // CSRF only threatens cookie-borne credentials (browsers auto-attach them).
+  // Native clients authenticate with `Authorization: Bearer` and carry no
+  // session cookie, so there is nothing to forge — skip the double-submit check.
+  const authHeader = req.headers.authorization;
+  const hasBearer = typeof authHeader === "string" && authHeader.startsWith("Bearer ");
+  const hasAuthCookie = getCookieValue(req, "cb_token") !== undefined;
+  if (hasBearer && !hasAuthCookie) return next();
+
   const cookieToken = getCookieValue(req, CSRF_COOKIE_NAME);
   const headerToken = req.headers[CSRF_HEADER_NAME];
 

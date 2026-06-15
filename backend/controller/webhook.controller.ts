@@ -2,6 +2,7 @@
 import Stripe from "stripe";
 import { prisma } from "../lib/prisma";
 import { stripe } from "../lib/stripe";
+import { redis } from "../lib/redis";
 import { logger } from "../lib/logger";
 import { env } from "../config/env";
 import type { SubscriptionStatus } from "../generated/prisma/enums";
@@ -19,6 +20,14 @@ const mapStatus = (status: Stripe.Subscription.Status): SubscriptionStatus => {
     case "paused":             return "EXPIRED";
     default:                   return "EXPIRED";
   }
+};
+
+// Drop the `sub:<userId>` status cache so requireActiveSubscription re-reads the
+// DB on the next request instead of serving a stale ACTIVE/INACTIVE for up to 5min.
+const invalidateSubCache = async (userId?: string | null) => {
+  if (!userId) return;
+  try { await redis.del(`sub:${userId}`); }
+  catch (err) { logger.error({ err }, "[webhook] failed to invalidate sub cache"); }
 };
 
 const getPeriod = (subscription: Stripe.Subscription) => {
@@ -97,6 +106,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
           },
         });
 
+        await invalidateSubCache(userId);
         logger.info(`[webhook] subscription created for userId=${userId}`);
         break;
       }
@@ -121,6 +131,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
           },
         });
 
+        await invalidateSubCache(subscription.metadata.userId);
         logger.info(`[webhook] subscription updated ${subscription.id}`);
         break;
       }
@@ -141,6 +152,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
           logger.warn(`[webhook] subscription not found for deletion ${subscription.id}`);
         }
 
+        await invalidateSubCache(subscription.metadata.userId);
         logger.info(`[webhook] subscription canceled ${subscription.id}`);
         break;
       }
@@ -185,6 +197,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
           },
         });
 
+        await invalidateSubCache(sub.userId);
         logger.info(`[webhook] payment recorded for invoiceId=${invoice.id}`);
         break;
       }
@@ -209,6 +222,11 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
           logger.warn(`[webhook] no subscription found for failed invoice ${invoice.id}`);
         }
 
+        const failedSub = await prisma.subscription.findUnique({
+          where: { stripeSubscriptionId },
+          select: { userId: true },
+        });
+        await invalidateSubCache(failedSub?.userId);
         logger.info(`[webhook] subscription marked PAST_DUE for invoiceId=${invoice.id}`);
         break;
       }

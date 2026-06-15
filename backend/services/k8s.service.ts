@@ -160,6 +160,9 @@ export const provisionReplRuntime = async (replId: string, type: string, userId:
     },
     spec: {
       restartPolicy: "Never",
+      // Give the agent time to flush a final workspace snapshot to R2 on SIGTERM
+      // (stop / idle-evict / rolling delete) before the kubelet SIGKILLs it.
+      terminationGracePeriodSeconds: 60,
       containers: [
         {
           name: "runner",

@@ -16,7 +16,7 @@ import { csrfMiddleware } from "./middleware/csrfMiddleware";
 import { logger } from "./lib/logger";
 import { withPrismaRetry } from "./lib/prisma";
 import { redis } from "./lib/redis";
-import { deleteReplPod } from "./services/k8s.service";
+import { deleteReplPod, getReplPodState } from "./services/k8s.service";
 
 const app = express();
 
@@ -119,7 +119,48 @@ async function reconcileReplStates() {
   }
 }
 
+// Periodic drift reconciler. Unlike the boot reconciler (which blanket-clears all
+// RUNNING repls on a fresh start), this runs while live and is NON-destructive to
+// healthy repls: it only fixes drift between DB / Redis / actual K8s pod state.
+const RECONCILE_INTERVAL_MS = 60_000;
+const RUNNING_SET_KEY = "repls:running";
+
+async function reconcileDrift() {
+  try {
+    const running = await withPrismaRetry((db) =>
+      db.repl.findMany({ where: { status: "RUNNING" }, select: { id: true } }),
+    );
+    const runningIds = new Set(running.map((r) => r.id));
+
+    // DB says RUNNING but the pod is gone (crashed / evicted) → mark STOPPED + clean Redis.
+    for (const { id } of running) {
+      const state = await getReplPodState(id).catch(() => null);
+      if (state && !state.exists && !state.terminating) {
+        await withPrismaRetry((db) =>
+          db.repl.update({ where: { id }, data: { status: "STOPPED" } }),
+        ).catch(() => {});
+        await redis.srem(RUNNING_SET_KEY, id).catch(() => {});
+        await redis.del(`repl:pod:${id}`).catch(() => {});
+        logger.warn({ replId: id }, "reconcile: RUNNING repl had no pod, reset to STOPPED");
+      }
+    }
+
+    // Orphan entries left in the running set with no matching RUNNING DB row.
+    const members = (await redis.smembers(RUNNING_SET_KEY).catch(() => [])) as string[];
+    for (const id of members) {
+      if (!runningIds.has(id)) {
+        await redis.srem(RUNNING_SET_KEY, id).catch(() => {});
+        await redis.del(`repl:pod:${id}`).catch(() => {});
+        logger.warn({ replId: id }, "reconcile: removed orphan from running set");
+      }
+    }
+  } catch (err) {
+    logger.error({ err }, "reconcileDrift failed");
+  }
+}
+
 app.listen(PORT, async () => {
   logger.info({ port: PORT, base: API }, "server started");
   await reconcileReplStates();
+  setInterval(reconcileDrift, RECONCILE_INTERVAL_MS);
 });

@@ -18,6 +18,7 @@ export type WsMsg =
   | { type: "file:written"; path: string; version: number }
   | { type: "file:sync-required"; path: string; content: string; version: number }
   | { type: "file:patched"; path: string; version: number }
+  | { type: "file:changed"; path: string; content: string; version: number }
   | { type: "file:renamed"; oldPath: string; newPath: string }
   | { type: "status"; status: ReplStatus }
   | { type: "app:status"; status: AppStatus }

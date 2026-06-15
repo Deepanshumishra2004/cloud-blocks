@@ -10,6 +10,7 @@ import { AuthPage } from '@/features/auth/components/auth-page';
 import { FormField } from '@/features/auth/components/form-field';
 import { OAuthButtons } from '@/features/auth/components/oauth-buttons';
 import { PasswordStrengthMeter } from '@/features/auth/components/password-strength-meter';
+import { useAuth } from '@/features/auth/auth-store';
 import { useAppTheme } from '@/features/theme/app-theme';
 
 type FieldErrors = {
@@ -25,7 +26,9 @@ export default function SignUpScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const { mode, isDark, toggleTheme } = useAppTheme();
+  const { signUp } = useAuth();
 
   function validate() {
     const errors: FieldErrors = {};
@@ -44,10 +47,18 @@ export default function SignUpScreen() {
     return Object.keys(errors).length === 0;
   }
 
-  function submit() {
+  async function submit() {
     setError('');
     if (!validate()) return;
-    router.replace('/dashboard');
+    setSubmitting(true);
+    try {
+      await signUp(email.trim().toLowerCase(), username, password);
+      router.replace('/dashboard');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create account. Try again.');
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -123,8 +134,13 @@ export default function SignUpScreen() {
           <PasswordStrengthMeter password={password} />
         </FormField>
 
-        <Pressable onPress={submit} className="mt-1 h-11 items-center justify-center rounded-md border border-brand-hover bg-brand active:opacity-80">
-          <Text className="text-sm font-black text-white">Create account →</Text>
+        <Pressable
+          onPress={submit}
+          disabled={submitting}
+          className="mt-1 h-11 items-center justify-center rounded-md border border-brand-hover bg-brand active:opacity-80"
+          style={submitting ? { opacity: 0.6 } : undefined}
+        >
+          <Text className="text-sm font-black text-white">{submitting ? 'Creating…' : 'Create account →'}</Text>
         </Pressable>
 
         <Text className={`text-center text-[11px] leading-[17px] ${isDark ? 'text-cb-muted' : 'text-[#718198]'}`}>

@@ -1,20 +1,22 @@
 import { View } from 'react-native';
 
-import { USER } from '../data/static-data';
+import { useAuth } from '@/features/auth/auth-store';
 import { Button, HeroPanel, ListItem } from '../ui/primitives';
 
 export function SettingsSection() {
+  const { user, signOut } = useAuth();
+
   return (
     <View className="gap-4">
       <HeroPanel
         eyebrow="Profile"
-        title={USER.username}
-        description="Profile and account controls are staged here for the future API connection."
+        title={user?.username ?? 'Account'}
+        description="Manage your account and session."
       />
-      <SettingsRow label="Email" value={USER.email} />
-      <SettingsRow label="Provider" value={USER.provider} />
+      <SettingsRow label="Email" value={user?.email ?? '—'} />
+      <SettingsRow label="Provider" value={user?.provider ?? '—'} />
       <SettingsRow label="Password" value="Change password" />
-      <Button label="Sign out" tone="danger" />
+      <Button label="Sign out" tone="danger" onPress={() => { void signOut(); }} />
     </View>
   );
 }

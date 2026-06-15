@@ -22,6 +22,7 @@ import {
 import { EditorSkeleton } from "@/components/replEditor/EditorSkeleton";
 import { InlineAiBar } from "@/components/replEditor/InlineAiBar";
 import type { AiMessage } from "@/components/replEditor/InlineAiBar";
+import { AgentPanel } from "@/components/replEditor/AgentPanel";
 import { FileTreeNode } from "@/components/replEditor/FileTreeNode";
 import { ResizeHandleH, ResizeHandleV } from "@/components/replEditor/ResizeHandle";
 import { Group as PanelGroup, Panel } from "react-resizable-panels";
@@ -95,6 +96,31 @@ type FilePatchChange = {
 
 const FILE_WRITE_DEBOUNCE_MS = 650;
 
+// Minimal single-range diff between the server's known content and the current
+// editor content: strip the common prefix + suffix, send only the changed middle.
+// One range = one server-side version bump. Returns null when nothing changed.
+function computeRangeDiff(oldStr: string, newStr: string): FilePatchChange | null {
+  if (oldStr === newStr) return null;
+  const oldLen = oldStr.length;
+  const newLen = newStr.length;
+  let prefix = 0;
+  const maxPrefix = Math.min(oldLen, newLen);
+  while (prefix < maxPrefix && oldStr.charCodeAt(prefix) === newStr.charCodeAt(prefix)) prefix++;
+  let suffix = 0;
+  const maxSuffix = Math.min(oldLen, newLen) - prefix;
+  while (
+    suffix < maxSuffix &&
+    oldStr.charCodeAt(oldLen - 1 - suffix) === newStr.charCodeAt(newLen - 1 - suffix)
+  ) {
+    suffix++;
+  }
+  return {
+    rangeOffset: prefix,
+    rangeLength: oldLen - prefix - suffix,
+    text: newStr.slice(prefix, newLen - suffix),
+  };
+}
+
 const DEFAULT_AI_MODELS: Record<AiProvider, string> = {
   OPENROUTER: "openai/gpt-5.2",
   GEMINI: "gemini-2.5-flash",
@@ -139,7 +165,7 @@ export default function ReplEditorPage() {
   const [appBusy, setAppBusy] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewFrameKey, setPreviewFrameKey] = useState(0);
-  const [activePanel, setActivePanel] = useState<"preview" | "output" | "ai">("output");
+  const [activePanel, setActivePanel] = useState<"preview" | "output" | "ai" | "agent">("output");
   const [outputLog, setOutputLog] = useState("");
   const [aiCredentials, setAiCredentials] = useState<AiCredential[]>([]);
   const [aiModel, setAiModel] = useState(DEFAULT_AI_MODELS.OPENROUTER);
@@ -171,6 +197,9 @@ export default function ReplEditorPage() {
   const writeWaitersRef = useRef<Map<string, Set<() => void>>>(new Map());
   const lastSentContentRef = useRef<Map<string, string>>(new Map());
   const lastKnownServerLengthRef = useRef<Map<string, number>>(new Map());
+  // The exact content the server is known to hold per path — the baseline the
+  // next range-diff is computed against. Updated on every server confirmation.
+  const serverContentRef = useRef<Map<string, string>>(new Map());
   const supportsFileWriteRef = useRef(true);
   const fileVersionRef = useRef<Map<string, number>>(new Map());
   const pendingFileRef = useRef<string | null>(null);
@@ -213,18 +242,36 @@ export default function ReplEditorPage() {
 
       if (content === undefined) return;
       const version = fileVersionRef.current.get(path) ?? 0;
+      const baseline = serverContentRef.current.get(path);
 
-      const message = supportsFileWriteRef.current
-        ? { type: "file:write", path, version, content }
-        : {
-            type: "file:patch",
-            path,
-            changes: [{
-              rangeOffset: 0,
-              rangeLength: lastKnownServerLengthRef.current.get(path) ?? content.length,
-              text: content,
-            }],
-          };
+      let message:
+        | { type: "file:write"; path: string; version: number; content: string }
+        | { type: "file:patch"; path: string; version?: number; changes: FilePatchChange[] };
+
+      if (!supportsFileWriteRef.current) {
+        // Legacy server without file:write — full-content replace patch.
+        message = {
+          type: "file:patch",
+          path,
+          changes: [{
+            rangeOffset: 0,
+            rangeLength: lastKnownServerLengthRef.current.get(path) ?? content.length,
+            text: content,
+          }],
+        };
+      } else if (baseline !== undefined) {
+        // Normal path: send only the changed range, not the whole file.
+        const diff = computeRangeDiff(baseline, content);
+        if (!diff) {
+          dirtyFilesRef.current.delete(path);
+          if (path === openFileRef.current) setIsDirty(false);
+          return;
+        }
+        message = { type: "file:patch", path, version: version + 1, changes: [diff] };
+      } else {
+        // No baseline yet (file never confirmed) — send full content once.
+        message = { type: "file:write", path, version, content };
+      }
 
       wsRef.current.send(JSON.stringify(message));
 
@@ -343,6 +390,12 @@ export default function ReplEditorPage() {
         reconnectNoticeShownRef.current = false;
         ws.send(JSON.stringify({ type: "status", status: "RUNNING" }));
         ws.send(JSON.stringify({ type: "file:list" }));
+        // Resync the open file after a reconnect — local copy may be stale if the
+        // file changed (other client / AI) while disconnected. file:content handler
+        // skips the overwrite when there are unsynced local edits.
+        if (openFileRef.current) {
+          openFileFromWs(ws, openFileRef.current);
+        }
         requestAnimationFrame(() => {
           try {
             fitAddonRef.current?.fit();
@@ -397,6 +450,7 @@ export default function ReplEditorPage() {
             pendingFileRef.current = null;
             fileVersionRef.current.set(message.path, message.version);
             lastKnownServerLengthRef.current.set(message.path, message.content.length);
+            serverContentRef.current.set(message.path, message.content);
             if (dirtyFilesRef.current.has(message.path)) {
               schedulePatchFlush(message.path);
               notifyWriteWaiters(message.path);
@@ -421,6 +475,7 @@ export default function ReplEditorPage() {
             const sentContent = lastSentContentRef.current.get(message.path);
             if (sentContent !== undefined) {
               lastKnownServerLengthRef.current.set(message.path, sentContent.length);
+              serverContentRef.current.set(message.path, sentContent);
             }
             writeInFlightRef.current.delete(message.path);
             const latestContent =
@@ -440,6 +495,7 @@ export default function ReplEditorPage() {
           case "file:sync-required": {
             fileVersionRef.current.set(message.path, message.version);
             lastKnownServerLengthRef.current.set(message.path, message.content.length);
+            serverContentRef.current.set(message.path, message.content);
             writeInFlightRef.current.delete(message.path);
 
             if (dirtyFilesRef.current.has(message.path)) {
@@ -484,6 +540,7 @@ export default function ReplEditorPage() {
               const sentContent = lastSentContentRef.current.get(message.path);
               if (sentContent !== undefined) {
                 lastKnownServerLengthRef.current.set(message.path, sentContent.length);
+                serverContentRef.current.set(message.path, sentContent);
               }
             }
             writeInFlightRef.current.delete(message.path);
@@ -502,6 +559,30 @@ export default function ReplEditorPage() {
             }
             notifyWriteWaiters(message.path);
             break;
+          case "file:changed": {
+            // Another client (other browser, mobile, or AI agent) edited this file.
+            // Always track the latest server version + content for cache/next write.
+            fileVersionRef.current.set(message.path, message.version);
+            lastKnownServerLengthRef.current.set(message.path, message.content.length);
+            serverContentRef.current.set(message.path, message.content);
+
+            // Don't clobber unsynced local edits — version guard resolves those.
+            const hasLocalEdits =
+              dirtyFilesRef.current.has(message.path) ||
+              writeInFlightRef.current.has(message.path);
+            if (hasLocalEdits) break;
+
+            fileContentsCache.current.set(message.path, message.content);
+            if (message.path === openFileRef.current) {
+              ignoreEditorChangesRef.current = true;
+              setFileContent(message.content);
+              setIsDirty(false);
+              window.setTimeout(() => {
+                ignoreEditorChangesRef.current = false;
+              }, 0);
+            }
+            break;
+          }
           case "status":
             setStatus(message.status);
             if (message.status === "RUNNING") setStarting(false);
@@ -975,6 +1056,7 @@ export default function ReplEditorPage() {
       writeWaitersRef.current.clear();
       lastSentContentRef.current.clear();
       lastKnownServerLengthRef.current.clear();
+      serverContentRef.current.clear();
       dirtyFilesRef.current.clear();
       reconnectAttemptsRef.current = 0;
       xtermRef.current?.clear();
@@ -1594,6 +1676,7 @@ export default function ReplEditorPage() {
                 <PanelTab active={activePanel === "preview"} onClick={() => setActivePanel("preview")}>Preview</PanelTab>
               )}
               <PanelTab active={activePanel === "output"} onClick={() => setActivePanel("output")}>Output</PanelTab>
+              <PanelTab active={activePanel === "agent"} onClick={() => setActivePanel("agent")}>Agent</PanelTab>
               <PanelTab active={activePanel === "ai"} onClick={() => setActivePanel("ai")}>AI Chat</PanelTab>
               {previewUrl && (
                 <div className="ml-auto flex items-center gap-1 mr-1">
@@ -1658,6 +1741,12 @@ export default function ReplEditorPage() {
                     </p>
                   </div>
                 )}
+              </div>
+            )}
+
+            {activePanel === "agent" && (
+              <div className="flex-1 min-h-0 overflow-hidden">
+                <AgentPanel replId={replId} podRunning={status === "RUNNING"} />
               </div>
             )}
 

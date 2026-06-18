@@ -80,6 +80,7 @@ model User {
   payments      Payment[]
   aiCredentials AiCredential[]
   aiUsage       AiUsage[]
+  agentSessions AgentSession[]
 
   @@index([provider, providerId])
   @@map("users")
@@ -122,6 +123,45 @@ model AiUsage {
 
   @@index([userId, createdAt])
   @@map("ai_usage")
+}
+
+// A continuous agent conversation scoped to a repl (Claude-Code style session).
+// `context` holds the provider-neutral transcript (AgentMessage[]) used to
+// resume the model with full tool context on follow-up turns. `turns` is the
+// human-facing render of the conversation (user text/images + assistant steps).
+model AgentSession {
+  id         String   @id @default(uuid())
+  replId     String
+  userId     String
+  title      String   @default("New session")
+  provider   AiProvider?
+  model      String?
+  mode       String   @default("ask")
+  context    Json     @default("[]")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  turns      AgentTurn[]
+
+  @@index([replId, userId, updatedAt])
+  @@map("agent_sessions")
+}
+
+model AgentTurn {
+  id         String   @id @default(uuid())
+  sessionId  String
+  role       String   // "user" | "assistant"
+  text       String   @default("")
+  // user-attached images (data URLs) and assistant rendered steps, as JSON.
+  images     Json?
+  steps      Json?
+  createdAt  DateTime @default(now())
+
+  session    AgentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@map("agent_turns")
 }
 
 model Repl {

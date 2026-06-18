@@ -11,7 +11,7 @@ powershell -ExecutionPolicy Bypass -File .\k8s\bootstrap.ps1
 This does three things:
 - installs or upgrades `ingress-nginx` through Helm
 - applies the platform manifests in `k8s/`
-- waits for the ingress controller, backend, frontend, and redis to be ready
+- waits for the ingress controller, backend, and redis to be ready
 
 Script defaults:
 - pinned ingress-nginx chart version
@@ -28,8 +28,6 @@ Script defaults:
 - `repl-runtime-secret.yaml`
 - `backend-deployment.yaml`
 - `backend-service.yaml`
-- `frontend-deployment.yaml`
-- `frontend-service.yaml`
 - `redis.yaml`
 - `ingress.yaml`
 
@@ -56,7 +54,6 @@ kubectl get ingress -n repls
 - For production, keep chart version pinning and values in source control, then promote changes through code review.
 
 ## URLs
-- frontend: `http://app.127.0.0.1.nip.io`
 - backend: `http://api.127.0.0.1.nip.io`
 - repl preview: `http://repl-<id>.127.0.0.1.nip.io`
 

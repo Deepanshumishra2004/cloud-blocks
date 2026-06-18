@@ -15,6 +15,7 @@ import {
   AgentAbortSchema,
   AgentAnswerSchema,
   AgentApproveSchema,
+  AgentRenameSchema,
   AgentRunSchema,
   CreateAiCredentialSchema,
   GenerateReplCodeSchema,
@@ -26,6 +27,8 @@ import {
   startAgentRun,
   type AgentEvent,
 } from "../services/ai-agent.service";
+import type { AgentMessage } from "../services/ai-providers/types";
+import { createTurnRecorder } from "../services/agent-session.service";
 
 const AI_CREDENTIAL_SELECT = {
   id: true,
@@ -343,12 +346,41 @@ export const streamReplAgent = async (req: Request, res: Response) => {
     });
     if (!activeCredential) return res.status(400).json({ message: "Set an active AI credential in API Key Management first" });
 
+    const { task, mode, model, images } = parsed.data;
+
+    // Load or create the conversation session. The session's `context` is the
+    // provider-neutral transcript we resume from for continuous chat.
+    let session = parsed.data.sessionId
+      ? await prisma.agentSession.findFirst({
+          where: { id: parsed.data.sessionId, userId, replId: repl.id },
+        })
+      : null;
+
+    if (!session) {
+      session = await prisma.agentSession.create({
+        data: {
+          replId: repl.id,
+          userId,
+          title: task.slice(0, 80) || "New session",
+          provider: activeCredential.provider,
+          model: model ?? null,
+          mode,
+        },
+      });
+    }
+
+    const history = Array.isArray(session.context) ? (session.context as unknown as AgentMessage[]) : [];
+
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.flushHeaders();
 
     const write = (payload: unknown) => res.write(`data: ${JSON.stringify(payload)}\n\n`);
+
+    // Accumulate the assistant turn (text + rendered steps) from the event stream
+    // so the conversation can be replayed from the DB on reload.
+    const recorder = createTurnRecorder();
 
     const handle = startAgentRun(
       {
@@ -357,16 +389,22 @@ export const streamReplAgent = async (req: Request, res: Response) => {
         provider: activeCredential.provider,
         apiKey: decryptApiKey(activeCredential.encryptedKey, getRequiredAiCredentialSecret()),
         baseUrlOverride: activeCredential.baseUrl,
-        model: parsed.data.model,
+        model,
         replType: repl.type,
-        task: parsed.data.task,
-        mode: parsed.data.mode,
+        task,
+        mode,
+        history,
+        images,
       },
-      (event: AgentEvent) => write(event),
+      (event: AgentEvent) => {
+        recorder.record(event);
+        write(event);
+      },
     );
 
-    // Tell the client the runId up front so it can approve/abort.
-    write({ kind: "run", runId: handle.runId });
+    // Tell the client the runId + sessionId up front so it can approve/abort and
+    // associate the run with a persisted session.
+    write({ kind: "run", runId: handle.runId, sessionId: session.id });
 
     // Keepalive: model turns are non-streaming, so a long turn produces no bytes
     // for a minute+. Send an SSE comment every 15s so proxies don't idle-close.
@@ -382,6 +420,56 @@ export const streamReplAgent = async (req: Request, res: Response) => {
 
     const result = await handle.done;
     clearInterval(heartbeat);
+
+    const assistantTurn = recorder.finish();
+    // Strip image bytes from the persisted transcript: they bloat the row and
+    // would be re-sent to the model on every follow-up turn. The image still
+    // renders from the user turn's stored data URL.
+    const leanContext = result.messages.map((m) =>
+      m.role === "user" && "images" in m && m.images?.length
+        ? { role: "user" as const, content: m.content }
+        : m,
+    );
+    // Persist the conversation. Only overwrite the session context when the run
+    // produced a transcript — on a hard error the agent returns an empty array,
+    // and clobbering would wipe the whole prior conversation. Always record the
+    // user + assistant turns so the failed turn is still visible in history.
+    const ops: Array<ReturnType<typeof prisma.agentSession.update> | ReturnType<typeof prisma.agentTurn.create>> = [];
+    if (leanContext.length > 0) {
+      ops.push(
+        prisma.agentSession.update({
+          where: { id: session.id },
+          data: { context: leanContext as unknown as object, model: model ?? session.model, mode },
+        }),
+      );
+    } else {
+      // Still bump updatedAt + model/mode so the session sorts to the top.
+      ops.push(
+        prisma.agentSession.update({
+          where: { id: session.id },
+          data: { model: model ?? session.model, mode },
+        }),
+      );
+    }
+    ops.push(
+      prisma.agentTurn.create({
+        data: {
+          sessionId: session.id,
+          role: "user",
+          text: task,
+          images: images?.length ? (images as unknown as object) : undefined,
+        },
+      }),
+      prisma.agentTurn.create({
+        data: {
+          sessionId: session.id,
+          role: "assistant",
+          text: assistantTurn.text || (result.reason === "error" ? "(run failed)" : ""),
+          steps: assistantTurn.steps.length ? (assistantTurn.steps as unknown as object) : undefined,
+        },
+      }),
+    );
+    await prisma.$transaction(ops).catch((err: unknown) => logger.error({ err }, "[agent:persist]"));
 
     prisma.aiUsage.create({
       data: {
@@ -432,6 +520,97 @@ export const answerAgentQuestion = (req: Request, res: Response) => {
   const ok = resolveAgentQuestion(parsed.data.runId, parsed.data.questionId, parsed.data.answers);
   if (!ok) return res.status(404).json({ message: "No pending question for that run" });
   return res.json({ ok: true });
+};
+
+/* ──────────────────────────────────────────────────────────────────────────
+   AGENT SESSIONS — conversation history (Claude-Code style)
+   ────────────────────────────────────────────────────────────────────────── */
+
+const SESSION_LIST_SELECT = {
+  id: true,
+  title: true,
+  model: true,
+  mode: true,
+  provider: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
+export const listAgentSessions = async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const replId = String(req.params.replId);
+    const repl = await prisma.repl.findFirst({ where: { id: replId, userId }, select: { id: true } });
+    if (!repl) return res.status(404).json({ message: "Repl not found" });
+
+    const sessions = await prisma.agentSession.findMany({
+      where: { replId, userId },
+      select: SESSION_LIST_SELECT,
+      orderBy: { updatedAt: "desc" },
+      take: 100,
+    });
+    return res.json({ sessions });
+  } catch (error) {
+    logger.error({ err: error }, "[listAgentSessions]");
+    return res.status(500).json({ message: "Failed to load sessions" });
+  }
+};
+
+export const getAgentSession = async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const session = await prisma.agentSession.findFirst({
+      where: { id: String(req.params.sessionId), userId, replId: String(req.params.replId) },
+      select: {
+        ...SESSION_LIST_SELECT,
+        turns: {
+          select: { id: true, role: true, text: true, images: true, steps: true, createdAt: true },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+    if (!session) return res.status(404).json({ message: "Session not found" });
+    return res.json({ session });
+  } catch (error) {
+    logger.error({ err: error }, "[getAgentSession]");
+    return res.status(500).json({ message: "Failed to load session" });
+  }
+};
+
+export const renameAgentSession = async (req: Request, res: Response) => {
+  try {
+    const parsed = AgentRenameSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Validation failed", errors: parsed.error.flatten((i) => i.message).fieldErrors });
+    }
+    const userId = getUserId(req);
+    const session = await prisma.agentSession.findFirst({
+      where: { id: String(req.params.sessionId), userId, replId: String(req.params.replId) },
+      select: { id: true },
+    });
+    if (!session) return res.status(404).json({ message: "Session not found" });
+    await prisma.agentSession.update({ where: { id: session.id }, data: { title: parsed.data.title } });
+    return res.json({ ok: true });
+  } catch (error) {
+    logger.error({ err: error }, "[renameAgentSession]");
+    return res.status(500).json({ message: "Failed to rename session" });
+  }
+};
+
+export const deleteAgentSession = async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const session = await prisma.agentSession.findFirst({
+      where: { id: String(req.params.sessionId), userId, replId: String(req.params.replId) },
+      select: { id: true },
+    });
+    if (!session) return res.status(404).json({ message: "Session not found" });
+    await prisma.agentSession.delete({ where: { id: session.id } });
+    return res.json({ ok: true });
+  } catch (error) {
+    logger.error({ err: error }, "[deleteAgentSession]");
+    return res.status(500).json({ message: "Failed to delete session" });
+  }
 };
 
 

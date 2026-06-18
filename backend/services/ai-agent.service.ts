@@ -21,7 +21,7 @@ import {
   subagentTools,
   type SubagentType,
 } from "./ai-tools";
-import type { AgentMessage, ToolResultMsg } from "./ai-providers/types";
+import type { AgentImage, AgentMessage, ToolResultMsg } from "./ai-providers/types";
 import type { ProviderAdapter } from "./ai-providers/types";
 
 // Cap each tool result fed back into the model context. The full output is
@@ -41,6 +41,9 @@ async function withTransientRetry<T>(fn: () => Promise<T>, attempts = 3): Promis
       return await fn();
     } catch (err) {
       lastErr = err;
+      // Once a streaming adapter has emitted text, retrying would replay it and
+      // duplicate output in the UI — the adapter marks such errors noRetry.
+      if ((err as { noRetry?: boolean })?.noRetry) throw err;
       const status = (err as { response?: { status?: number } })?.response?.status;
       const transient = status === undefined || status === 429 || (status >= 500 && status < 600);
       if (!transient || i === attempts - 1) throw err;
@@ -52,6 +55,17 @@ async function withTransientRetry<T>(fn: () => Promise<T>, attempts = 3): Promis
 
 const MAX_STEPS = 16;
 const MAX_OUTPUT_TOKENS = 120_000;
+// Cap how many prior user turns are replayed to the model so a long-running
+// session's context (and per-turn cost) doesn't grow without bound. Trimming
+// only at user-message boundaries keeps every tool_use/tool_result pair intact
+// (providers reject an orphaned tool_result).
+const MAX_HISTORY_TURNS = 8;
+
+function trimHistory(history: AgentMessage[]): AgentMessage[] {
+  const userIdxs = history.reduce<number[]>((acc, m, i) => (m.role === "user" ? [...acc, i] : acc), []);
+  if (userIdxs.length <= MAX_HISTORY_TURNS) return history;
+  return history.slice(userIdxs[userIdxs.length - MAX_HISTORY_TURNS]);
+}
 const MUTATING_TOOLS = new Set(["edit_file", "write_file", "create_file", "delete_file"]);
 const STEP_MAX_TOKENS = 8096;
 const APPROVAL_TIMEOUT_MS = 5 * 60_000;
@@ -81,13 +95,17 @@ export interface StartAgentRunOptions {
   replType: string;
   task: string;
   mode: AgentMode;
+  /** Prior neutral transcript to resume from (continuous chat). */
+  history?: AgentMessage[];
+  /** Images attached to this user turn (base64). */
+  images?: AgentImage[];
 }
 
 export type AgentRunOutcome = "completed" | "max_steps" | "budget" | "aborted" | "error";
 
 export interface AgentRunHandle {
   runId: string;
-  done: Promise<{ reason: AgentRunOutcome; outputTokens: number }>;
+  done: Promise<{ reason: AgentRunOutcome; outputTokens: number; messages: AgentMessage[] }>;
   approve: (toolUseId: string, allow: boolean) => void;
   abort: () => void;
 }
@@ -296,7 +314,10 @@ export function startAgentRun(opts: StartAgentRunOptions, emit: (event: AgentEve
       pod = await PodControl.connect(opts.replId, opts.userId);
 
       const projectInstructions = await loadProjectInstructions(pod);
-      const messages: AgentMessage[] = [{ role: "user", content: opts.task }];
+      const messages: AgentMessage[] = [
+        ...trimHistory(opts.history ?? []),
+        { role: "user", content: opts.task, ...(opts.images?.length ? { images: opts.images } : {}) },
+      ];
       const system = buildSystemPrompt(opts.replType, projectInstructions);
       const toolCtx = createToolContext();
       let didWrite = false;
@@ -305,7 +326,7 @@ export function startAgentRun(opts: StartAgentRunOptions, emit: (event: AgentEve
       for (let step = 0; step < MAX_STEPS; step++) {
         if (runs.get(runId)?.aborted) {
           emit({ kind: "done", reason: "aborted" });
-          return { reason: "aborted" as const, outputTokens };
+          return { reason: "aborted" as const, outputTokens, messages };
         }
 
         const result = await withTransientRetry(() =>
@@ -356,12 +377,12 @@ export function startAgentRun(opts: StartAgentRunOptions, emit: (event: AgentEve
             emit({ kind: "text", delta: `\n\nVerification: ${summary}` });
           }
           emit({ kind: "done", reason: "completed" });
-          return { reason: "completed" as const, outputTokens };
+          return { reason: "completed" as const, outputTokens, messages };
         }
 
         if (outputTokens > MAX_OUTPUT_TOKENS) {
           emit({ kind: "done", reason: "budget" });
-          return { reason: "budget" as const, outputTokens };
+          return { reason: "budget" as const, outputTokens, messages };
         }
 
         // Results keyed by tool_use id; assembled back into call order at the end
@@ -483,12 +504,12 @@ export function startAgentRun(opts: StartAgentRunOptions, emit: (event: AgentEve
       }
 
       emit({ kind: "done", reason: "max_steps" });
-      return { reason: "max_steps" as const, outputTokens };
+      return { reason: "max_steps" as const, outputTokens, messages };
     } catch (err) {
       const message = err instanceof Error ? err.message : "Agent run failed";
       logger.error({ err, replId: opts.replId }, "[ai-agent] run error");
       emit({ kind: "error", message });
-      return { reason: "error" as const, outputTokens };
+      return { reason: "error" as const, outputTokens, messages: [] };
     } finally {
       for (const { timer } of approvals.values()) clearTimeout(timer);
       for (const { timer } of questions.values()) clearTimeout(timer);

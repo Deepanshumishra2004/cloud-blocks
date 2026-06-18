@@ -6,6 +6,13 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends nodejs python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 
+# Unprivileged user the app + agent run as (`su -s /bin/bash sandbox`).
+# Without this, `su` fails with "user sandbox does not exist". Idempotent —
+# the base image may already define it.
+RUN (id -u sandbox >/dev/null 2>&1 || useradd -m -d /home/sandbox -s /bin/bash sandbox) \
+  && mkdir -p /home/sandbox /workspace \
+  && chown -R sandbox:sandbox /home/sandbox /workspace
+
 COPY ws-server/package.json ws-server/bun.lock ./ws-server/
 RUN cd ws-server && bun install --frozen-lockfile
 

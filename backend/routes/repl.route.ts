@@ -14,7 +14,11 @@ import {
   abortAgent,
   answerAgentQuestion,
   approveAgentAction,
+  deleteAgentSession,
   generateReplCode,
+  getAgentSession,
+  listAgentSessions,
+  renameAgentSession,
   streamReplAgent,
   streamReplCode,
 } from "../controller/ai.controller";
@@ -33,6 +37,10 @@ replRoutes.post("/:replId/ai/agent", authMiddleware, aiRateLimit, streamReplAgen
 replRoutes.post("/:replId/ai/agent/approve", authMiddleware, approveAgentAction);
 replRoutes.post("/:replId/ai/agent/answer", authMiddleware, answerAgentQuestion);
 replRoutes.post("/:replId/ai/agent/abort", authMiddleware, abortAgent);
+replRoutes.get("/:replId/ai/agent/sessions", authMiddleware, listAgentSessions);
+replRoutes.get("/:replId/ai/agent/sessions/:sessionId", authMiddleware, getAgentSession);
+replRoutes.patch("/:replId/ai/agent/sessions/:sessionId", authMiddleware, renameAgentSession);
+replRoutes.delete("/:replId/ai/agent/sessions/:sessionId", authMiddleware, deleteAgentSession);
 replRoutes.delete("/delete/:replId", authMiddleware, deleteRepl);
 
 export default replRoutes;

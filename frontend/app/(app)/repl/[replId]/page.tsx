@@ -9,19 +9,15 @@ import { useToast } from "@/components/ui/Toast";
 import {
   fetchAiCredentials,
   fetchSessionToken,
-  streamReplCode,
   fetchReplById,
   startRepl,
   stopRepl,
   type AiCredential,
-  type AiProvider,
   type Repl,
   type ReplType,
   updateRepl,
 } from "@/lib/api";
 import { EditorSkeleton } from "@/components/replEditor/EditorSkeleton";
-import { InlineAiBar } from "@/components/replEditor/InlineAiBar";
-import type { AiMessage } from "@/components/replEditor/InlineAiBar";
 import { AgentPanel } from "@/components/replEditor/AgentPanel";
 import { FileTreeNode } from "@/components/replEditor/FileTreeNode";
 import { ResizeHandleH, ResizeHandleV } from "@/components/replEditor/ResizeHandle";
@@ -45,7 +41,6 @@ import {
   LANG_MAP,
   WEB_TYPES,
 } from "@/components/replEditor/_lib/constants";
-import { computeAiPatch as computeAiPatchFromResponse } from "@/components/replEditor/_lib/aiPatch";
 import { findEntrypoint } from "@/components/replEditor/_lib/fileTree";
 import type {
   AppStatus,
@@ -121,14 +116,6 @@ function computeRangeDiff(oldStr: string, newStr: string): FilePatchChange | nul
   };
 }
 
-const DEFAULT_AI_MODELS: Record<AiProvider, string> = {
-  OPENROUTER: "openai/gpt-5.2",
-  GEMINI: "gemini-2.5-flash",
-  OPENAI: "gpt-4o",
-  ANTHROPIC: "claude-sonnet-4-6",
-  DEEPSEEK: "deepseek-chat",
-};
-
 function isPatchSyncError(message: string): boolean {
   return message.includes("Patch range out of bounds") ||
     message.includes("Stale patch version") ||
@@ -165,15 +152,9 @@ export default function ReplEditorPage() {
   const [appBusy, setAppBusy] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewFrameKey, setPreviewFrameKey] = useState(0);
-  const [activePanel, setActivePanel] = useState<"preview" | "output" | "ai" | "agent">("output");
+  const [activePanel, setActivePanel] = useState<"preview" | "output" | "agent">("output");
   const [outputLog, setOutputLog] = useState("");
   const [aiCredentials, setAiCredentials] = useState<AiCredential[]>([]);
-  const [aiModel, setAiModel] = useState(DEFAULT_AI_MODELS.OPENROUTER);
-  const [aiMode, setAiMode] = useState<"auto" | "ask">("ask");
-  const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
-  const [generatingAi, setGeneratingAi] = useState(false);
-  const [streamingText, setStreamingText] = useState<string | null>(null);
-  const [pendingAiContent, setPendingAiContent] = useState<{ file: string; original: string; content: string } | null>(null);
 
   const [renaming, setRenaming] = useState(false);
   const [renameName, setRenameName] = useState("");
@@ -211,7 +192,6 @@ export default function ReplEditorPage() {
   const connectIdRef = useRef(0);
   const fileContentsCache = useRef<Map<string, string>>(new Map());
   const dirtyFilesRef = useRef<Set<string>>(new Set());
-  const aiAbortRef = useRef<AbortController | null>(null);
 
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [newFileName, setNewFileName] = useState<string | null>(null);
@@ -224,11 +204,6 @@ export default function ReplEditorPage() {
     () => aiCredentials.find((credential) => credential.isActive) ?? null,
     [aiCredentials],
   );
-
-  useEffect(() => {
-    if (!activeAiCredential) return;
-    setAiModel(DEFAULT_AI_MODELS[activeAiCredential.provider]);
-  }, [activeAiCredential?.provider]);
 
   const flushQueuedPatches = useCallback(
     (path: string) => {
@@ -903,40 +878,6 @@ export default function ReplEditorPage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleSave]);
 
-  const applyFileReplacement = useCallback(
-    (path: string, previousContent: string, nextContent: string) => {
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-        throw new Error("Start the repl before applying AI changes");
-      }
-
-      patchQueueRef.current.set(path, []);
-      ignoreEditorChangesRef.current = true;
-      setFileContent(nextContent);
-      setIsDirty(false);
-      window.setTimeout(() => {
-        ignoreEditorChangesRef.current = false;
-      }, 0);
-
-      const version = fileVersionRef.current.get(path) ?? 0;
-      const message = supportsFileWriteRef.current
-        ? { type: "file:write", path, version, content: nextContent }
-        : {
-            type: "file:patch",
-            path,
-            changes: [{
-              rangeOffset: 0,
-              rangeLength: lastKnownServerLengthRef.current.get(path) ?? previousContent.length,
-              text: nextContent,
-            }],
-          };
-
-      wsRef.current.send(JSON.stringify(message));
-      writeInFlightRef.current.add(path);
-      lastSentContentRef.current.set(path, nextContent);
-    },
-    [],
-  );
-
   const handleTabClick = useCallback(
     (tabPath: string) => {
       if (tabPath === openFile) return;
@@ -1181,107 +1122,6 @@ export default function ReplEditorPage() {
     }
   };
 
-  const handleGenerateAi = async (prompt: string) => {
-    if (!repl || !openFile) {
-      toast.error("Open a file first");
-      return;
-    }
-
-    const userMsg: AiMessage = { role: "user", content: prompt };
-    setAiMessages((prev) => [...prev, userMsg]);
-    setGeneratingAi(true);
-    setActivePanel("ai");
-
-    const history = aiMessages.map((m) =>
-      m.role === "user"
-        ? { role: "user" as const, content: m.content }
-        : {
-            role: "assistant" as const,
-            content:
-              "message" in m && m.message
-                ? m.message
-                : "linesAdded" in m
-                  ? `Applied +${m.linesAdded}/-${m.linesRemoved} lines to ${("filePath" in m ? m.filePath : null) ?? "file"}`
-                  : "",
-          },
-    );
-
-    aiAbortRef.current?.abort();
-    const abort = new AbortController();
-    aiAbortRef.current = abort;
-
-    const originalContent = fileContent;
-    let streamed = "";
-    try {
-      await streamReplCode(
-        repl.id,
-        { prompt, filePath: openFile, currentContent: originalContent, model: aiModel.trim() || undefined, history },
-        (chunk) => { streamed += chunk; setStreamingText(streamed); },
-        abort.signal,
-      );
-
-      setStreamingText(null);
-      const { content: patchedContent, response } = computeAiPatchFromResponse({
-        responseJson: streamed,
-        currentContent: originalContent,
-      });
-
-      const assistantMsg: AiMessage =
-        response.type === "chat"
-          ? { role: "assistant", type: "chat", message: response.message ?? "" }
-          : response.type === "code"
-            ? { role: "assistant", type: "code", linesAdded: response.linesAdded, linesRemoved: response.linesRemoved, filePath: openFile }
-            : { role: "assistant", type: "mixed", message: response.message ?? "", linesAdded: response.linesAdded, linesRemoved: response.linesRemoved, filePath: openFile };
-
-      setAiMessages((prev) => [...prev, assistantMsg]);
-
-      if (response.type === "chat") {
-        // pure chat — no file change
-      } else if (aiMode === "auto") {
-        // auto: persist immediately, no pending state
-        applyFileReplacement(openFile, originalContent, patchedContent);
-      } else {
-        // ask: preview in editor (suppressed from WS), wait for user decision
-        patchQueueRef.current.set(openFile, []);
-        ignoreEditorChangesRef.current = true;
-        setFileContent(patchedContent);
-        window.setTimeout(() => { ignoreEditorChangesRef.current = false; }, 0);
-        setPendingAiContent({ file: openFile, original: originalContent, content: patchedContent });
-      }
-    } catch (error: unknown) {
-      if (error instanceof Error && error.name === "AbortError") return;
-      const message = error instanceof Error ? error.message : "Please try again.";
-      toast.error("AI generation failed", message);
-    } finally {
-      setStreamingText(null);
-      setGeneratingAi(false);
-    }
-  };
-
-  const handleAiAccept = () => {
-    if (pendingAiContent) {
-      applyFileReplacement(pendingAiContent.file, pendingAiContent.original, pendingAiContent.content);
-    }
-    setPendingAiContent(null);
-    toast.success("AI changes accepted");
-  };
-
-  const handleAiYesBut = () => {
-    if (pendingAiContent) {
-      applyFileReplacement(pendingAiContent.file, pendingAiContent.original, pendingAiContent.content);
-    }
-    setPendingAiContent(null);
-    // InlineAiBar focuses input after this via requestAnimationFrame in onYesBut handler
-  };
-
-  const handleAiReject = () => {
-    if (pendingAiContent) {
-      applyFileReplacement(pendingAiContent.file, pendingAiContent.content, pendingAiContent.original);
-    }
-    setPendingAiContent(null);
-    toast.success("AI changes rejected");
-  };
-
   const isWebType = repl ? WEB_TYPES.includes(repl.type as ReplType) : false;
   const editorLanguage = repl
     ? (LANG_MAP[repl.type as ReplType] ?? "plaintext")
@@ -1292,7 +1132,7 @@ export default function ReplEditorPage() {
   if (loading) return <EditorSkeleton />;
 
   return (
-    <div className="flex flex-col h-screen bg-[#0d0d0f] overflow-hidden select-none">
+    <div className="relative flex flex-col h-screen bg-[#0d0d0f] overflow-hidden select-none">
       <header className="h-11 flex items-center gap-3 px-3 border-b border-white/8 bg-[#111114] shrink-0 z-10">
         <button
           onClick={() => router.push("/dashboard/repls")}
@@ -1428,6 +1268,26 @@ export default function ReplEditorPage() {
           </Button>
         )}
       </header>
+
+      {/* ── Pod-provisioning overlay ── */}
+      {starting && (
+        <div className="absolute inset-0 top-11 z-30 flex flex-col items-center justify-center gap-4 bg-[#0d0d0f]/85 backdrop-blur-sm">
+          <div className="relative w-12 h-12">
+            <span className="absolute inset-0 rounded-full border-2 border-white/10" />
+            <span className="absolute inset-0 rounded-full border-2 border-(--brand) border-t-transparent animate-spin" />
+          </div>
+          <div className="flex flex-col items-center gap-1 text-center">
+            <p className="text-sm font-medium text-white/80">Provisioning sandbox…</p>
+            <p className="text-2xs text-white/40">Restoring your workspace and booting the runtime. This can take up to a minute.</p>
+          </div>
+          <button
+            onClick={() => setStarting(false)}
+            className="text-2xs text-white/35 hover:text-white/70 underline underline-offset-2"
+          >
+            Hide and keep waiting
+          </button>
+        </div>
+      )}
 
       {/* ── 3-column IDE layout ── */}
       <PanelGroup orientation="horizontal" className="flex-1 overflow-hidden">
@@ -1677,7 +1537,6 @@ export default function ReplEditorPage() {
               )}
               <PanelTab active={activePanel === "output"} onClick={() => setActivePanel("output")}>Output</PanelTab>
               <PanelTab active={activePanel === "agent"} onClick={() => setActivePanel("agent")}>Agent</PanelTab>
-              <PanelTab active={activePanel === "ai"} onClick={() => setActivePanel("ai")}>AI Chat</PanelTab>
               {previewUrl && (
                 <div className="ml-auto flex items-center gap-1 mr-1">
                   <button onClick={() => setPreviewFrameKey((k: number) => k + 1)} className="text-white/30 hover:text-white/70 transition-colors p-1" title="Refresh">
@@ -1746,27 +1605,11 @@ export default function ReplEditorPage() {
 
             {activePanel === "agent" && (
               <div className="flex-1 min-h-0 overflow-hidden">
-                <AgentPanel replId={replId} podRunning={status === "RUNNING"} />
-              </div>
-            )}
-
-            {activePanel === "ai" && (
-              <div className="flex-1 min-h-0 overflow-hidden">
-                <InlineAiBar
-                  openFile={openFile}
+                <AgentPanel
+                  replId={replId}
+                  podRunning={status === "RUNNING"}
                   activeCredential={activeAiCredential}
-                  model={aiModel}
-                  mode={aiMode}
-                  messages={aiMessages}
-                  generating={generatingAi}
-                  streamingText={streamingText}
-                  hasPending={!!pendingAiContent}
-                  onModelChange={setAiModel}
-                  onModeChange={setAiMode}
-                  onSend={handleGenerateAi}
-                  onAccept={handleAiAccept}
-                  onReject={handleAiReject}
-                  onYesBut={handleAiYesBut}
+                  openFile={openFile}
                   onOpenSettings={() => router.push("/dashboard/keys")}
                 />
               </div>

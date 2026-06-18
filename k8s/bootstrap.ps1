@@ -101,8 +101,6 @@ $manifestNames = @(
   "redis.yaml",
   "backend-deployment.yaml",
   "backend-service.yaml",
-  "frontend-deployment.yaml",
-  "frontend-service.yaml",
   "ingress.yaml"
 )
 $manifestPaths = $manifestNames | ForEach-Object { Join-Path $PSScriptRoot $_ }
@@ -125,11 +123,9 @@ Wait-ForDeployment -Namespace $IngressNamespace -Name "ingress-nginx-controller"
 
 Write-Step "Waiting for platform rollouts"
 Wait-ForDeployment -Namespace "repls" -Name "backend"
-Wait-ForDeployment -Namespace "repls" -Name "frontend"
 Wait-ForDeployment -Namespace "repls" -Name "redis"
 
 Write-Host ""
 Write-Host "Environment ready."
-Write-Host "Frontend: http://app.127.0.0.1.nip.io"
 Write-Host "Backend:  http://api.127.0.0.1.nip.io"
 Write-Host "Repls:    http://repl-<id>.127.0.0.1.nip.io"

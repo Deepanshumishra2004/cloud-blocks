@@ -14,7 +14,16 @@ function toOpenAIMessages(system: string, messages: AgentMessage[]) {
   const out: Array<Record<string, unknown>> = [{ role: "system", content: system }];
   for (const m of messages) {
     if (m.role === "user") {
-      out.push({ role: "user", content: m.content });
+      if (m.images?.length) {
+        const parts: Array<Record<string, unknown>> = m.images.map((img) => ({
+          type: "image_url",
+          image_url: { url: `data:${img.mimeType};base64,${img.data}` },
+        }));
+        if (m.content) parts.push({ type: "text", text: m.content });
+        out.push({ role: "user", content: parts });
+      } else {
+        out.push({ role: "user", content: m.content });
+      }
     } else if (m.role === "assistant") {
       const toolCalls: OpenAIToolCall[] = m.toolCalls.map((tc) => ({
         id: tc.id,

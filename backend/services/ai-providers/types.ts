@@ -27,8 +27,14 @@ export interface ToolResultMsg {
   isError?: boolean;
 }
 
+/** Base64-encoded image attached to a user turn (no data: prefix). */
+export interface AgentImage {
+  mimeType: string;
+  data: string;
+}
+
 export type AgentMessage =
-  | { role: "user"; content: string }
+  | { role: "user"; content: string; images?: AgentImage[] }
   | { role: "assistant"; content: string; toolCalls: ToolCall[] }
   | { role: "tool"; results: ToolResultMsg[] };
 

@@ -9,6 +9,7 @@ import type { AgentMessage, ProviderAdapter, ToolCall } from "./types";
 
 type GeminiPart =
   | { text: string }
+  | { inlineData: { mimeType: string; data: string } }
   | { functionCall: { name: string; args: Record<string, unknown> } }
   | { functionResponse: { name: string; response: Record<string, unknown> } };
 
@@ -16,7 +17,12 @@ function toGeminiContents(messages: AgentMessage[]) {
   const contents: Array<{ role: "user" | "model"; parts: GeminiPart[] }> = [];
   for (const m of messages) {
     if (m.role === "user") {
-      contents.push({ role: "user", parts: [{ text: m.content }] });
+      const parts: GeminiPart[] = [];
+      for (const img of m.images ?? []) {
+        parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
+      }
+      if (m.content || parts.length === 0) parts.push({ text: m.content });
+      contents.push({ role: "user", parts });
     } else if (m.role === "assistant") {
       const parts: GeminiPart[] = [];
       if (m.content) parts.push({ text: m.content });

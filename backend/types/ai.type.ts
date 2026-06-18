@@ -25,10 +25,29 @@ export const ActivateAiCredentialSchema = z.object({
   credentialId: z.string().uuid("Invalid credential id"),
 });
 
-export const AgentRunSchema = z.object({
-  task: z.string().trim().min(4, "Task is too short").max(8000, "Task is too long"),
-  mode: z.enum(["auto", "ask"]).default("ask"),
-  model: z.string().trim().min(1).max(120).optional(),
+// ~7MB of base64 ≈ 5MB raw — generous per-image ceiling for screenshots.
+const AgentImageSchema = z.object({
+  mimeType: z.enum(["image/png", "image/jpeg", "image/webp", "image/gif"]),
+  data: z.string().min(1).max(7_000_000),
+});
+
+export const AgentRunSchema = z
+  .object({
+    task: z.string().trim().max(8000, "Task is too long").default(""),
+    mode: z.enum(["auto", "ask"]).default("ask"),
+    model: z.string().trim().min(1).max(120).optional(),
+    // Continue an existing conversation. Omitted/blank starts a new session.
+    sessionId: z.string().uuid().optional(),
+    images: z.array(AgentImageSchema).max(6).optional(),
+  })
+  // A turn must carry a prompt or at least one image.
+  .refine((d) => d.task.length > 0 || (d.images?.length ?? 0) > 0, {
+    message: "Provide a task or attach an image",
+    path: ["task"],
+  });
+
+export const AgentRenameSchema = z.object({
+  title: z.string().trim().min(1, "Title is required").max(80, "Title is too long"),
 });
 
 export const AgentApproveSchema = z.object({

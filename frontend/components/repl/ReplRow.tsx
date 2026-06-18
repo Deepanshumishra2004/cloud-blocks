@@ -29,6 +29,7 @@ export function ReplRow({
   onDelete: () => void;
 }) {
   const isRunning = repl.status === "RUNNING";
+  const isStarting = repl.status === "STARTING";
 
   return (
     <div
@@ -46,17 +47,22 @@ export function ReplRow({
         <p className="text-2xs font-mono text-cb-muted mt-0.5">{repl.type}</p>
       </div>
 
-      <Badge variant={isRunning ? "success" : "default"} dot={isRunning}>
-        {isRunning ? "Running" : "Stopped"}
+      <Badge
+        variant={isRunning ? "success" : isStarting ? "warning" : "default"}
+        dot={isRunning || isStarting}
+      >
+        {isRunning ? "Running" : isStarting ? "Starting" : "Stopped"}
       </Badge>
 
       <Button
         variant={isRunning ? "primary" : "secondary"}
         size="sm"
         onClick={isRunning ? onOpen : onStart}
+        loading={isStarting}
+        disabled={isStarting}
         className="min-w-[82px] shrink-0"
       >
-        {isRunning ? "Open" : "Start"}
+        {isRunning ? "Open" : isStarting ? "Starting" : "Start"}
       </Button>
 
       <DropdownMenu>

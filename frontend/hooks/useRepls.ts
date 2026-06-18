@@ -88,15 +88,21 @@ export function useRepls(): UseReplsReturn {
       await api.post(`/api/v1/repl/${id}/start`, undefined, {
         timeout: REPL_START_TIMEOUT_MS,
       });
-      // Poll until backend confirms RUNNING
+      // Poll until backend confirms a terminal status (RUNNING / ERROR / STOPPED).
       const poll = setInterval(async () => {
-        const { data } = await api.get<{ repl: Repl }>(`/api/v1/repl/${id}`);
-        if (data.repl.status !== "STARTING") {
-          setRepls((prev) => prev.map((r) => r.id === id ? data.repl : r));
-          clearInterval(poll);
+        try {
+          const { data } = await api.get<{ repl: Repl }>(`/api/v1/repl/${id}`);
+          if (data.repl.status !== "STARTING") {
+            setRepls((prev) => prev.map((r) => r.id === id ? data.repl : r));
+            clearInterval(poll);
+          }
+        } catch {
+          /* transient — keep polling */
         }
       }, 1500);
-      setTimeout(() => clearInterval(poll), 30_000); // safety timeout
+      // Safety: stop polling and resync real status so the row never sticks on
+      // "Starting" if provisioning outlives the poll window.
+      setTimeout(() => { clearInterval(poll); fetchRepls(); }, REPL_START_TIMEOUT_MS);
     } catch (err: unknown) {
       fetchRepls();
       throw new Error(getApiErrorMessage(err, "Failed to start repl"));

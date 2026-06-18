@@ -389,12 +389,37 @@ export async function streamReplCode(
 }
 
 // ── AI agent (multi-step tool-using coding agent) ──────────────────────────
-import type { AgentEvent, AgentMode } from "@/components/replEditor/_lib/agentEvents";
+import type {
+  AgentEvent,
+  AgentImage,
+  AgentMode,
+  AgentSessionDetail,
+  AgentSessionMeta,
+} from "@/components/replEditor/_lib/agentEvents";
+
+export async function fetchAgentSessions(replId: string): Promise<AgentSessionMeta[]> {
+  return safe(
+    async () => (await getData<{ sessions: AgentSessionMeta[] }>(`/api/v1/repl/${replId}/ai/agent/sessions`)).sessions,
+    [],
+  );
+}
+
+export async function fetchAgentSession(replId: string, sessionId: string): Promise<AgentSessionDetail> {
+  return (await getData<{ session: AgentSessionDetail }>(`/api/v1/repl/${replId}/ai/agent/sessions/${sessionId}`)).session;
+}
+
+export async function renameAgentSession(replId: string, sessionId: string, title: string): Promise<void> {
+  await patchData(`/api/v1/repl/${replId}/ai/agent/sessions/${sessionId}`, { title });
+}
+
+export async function deleteAgentSession(replId: string, sessionId: string): Promise<void> {
+  await del(`/api/v1/repl/${replId}/ai/agent/sessions/${sessionId}`);
+}
 
 /** Run the agent. Streams AgentEvents to `onEvent`; resolves when the run ends. */
 export async function streamReplAgent(
   replId: string,
-  payload: { task: string; mode: AgentMode; model?: string },
+  payload: { task: string; mode: AgentMode; model?: string; sessionId?: string; images?: AgentImage[] },
   onEvent: (event: AgentEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {

@@ -24,7 +24,14 @@ export type WsMsg =
   | { type: "app:status"; status: AppStatus }
   | { type: "preview:url"; url: string }
   | { type: "preview:log"; data: string }
+  | { type: "search:result"; id: string; matches: SearchMatch[]; truncated: boolean }
   | { type: "error"; message: string };
+
+export interface SearchMatch {
+  path: string;
+  line: number;
+  preview: string;
+}
 
 // Client → Server (outbound only — not parsed from WS responses)
 export type WsClientMsg =
@@ -39,6 +46,7 @@ export type WsClientMsg =
   | { type: "file:patch"; path: string; version?: number; changes: Array<{ rangeOffset: number; rangeLength: number; text: string }> }
   | { type: "file:create"; path: string; content?: string }
   | { type: "file:delete"; path: string }
-  | { type: "file:rename"; oldPath: string; newPath: string };
+  | { type: "file:rename"; oldPath: string; newPath: string }
+  | { type: "search"; id: string; query: string };
 
 export type LanguageMap = Record<ReplType, string>;

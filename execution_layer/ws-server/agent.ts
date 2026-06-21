@@ -85,7 +85,8 @@ type ClientMessage =
       changes: FilePatchChange[];
     }
   | { type: "exec"; id: string; command: string }
-  | { type: "exec:cancel"; id: string };
+  | { type: "exec:cancel"; id: string }
+  | { type: "search"; id: string; query: string };
 
 type ServerMessage =
   | { type: "status"; status: "RUNNING" | "STOPPED" }
@@ -106,6 +107,7 @@ type ServerMessage =
   // one-shot command execution driven by the AI agent (backend control channel)
   | { type: "exec:output"; id: string; data: string }
   | { type: "exec:exit"; id: string; code: number | null; signal: string | null; truncated: boolean }
+  | { type: "search:result"; id: string; matches: { path: string; line: number; preview: string }[]; truncated: boolean }
   | { type: "error"; message: string };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -318,6 +320,56 @@ const runExec = (ws: WebSocket, id: string, command: string): void => {
   child.on("exit", (code, signal) => finish(code, signal));
 
   runningExecs.set(id, { kill: killTree });
+};
+
+// ── Project search ───────────────────────────────────────────────────────
+// Plain case-insensitive substring grep over the workspace. Skips ignored dirs
+// (node_modules, .git, …), large/binary files, and caps total matches so a
+// broad query can't stream forever.
+const SEARCH_MAX_MATCHES = 300;
+const SEARCH_MAX_FILE_BYTES = 512 * 1024;
+const SEARCH_PREVIEW_MAX = 240;
+
+const runSearch = (ws: WebSocket, id: string, rawQuery: string): void => {
+  const query = rawQuery.trim();
+  if (!query) {
+    sendJson(ws, { type: "search:result", id, matches: [], truncated: false });
+    return;
+  }
+
+  const needle = query.toLowerCase();
+  const matches: { path: string; line: number; preview: string }[] = [];
+  let truncated = false;
+
+  const files = listWorkspaceFiles(WORKSPACE);
+  outer: for (const relativePath of files) {
+    let content: string;
+    try {
+      const full = workspacePath(relativePath);
+      if (fs.statSync(full).size > SEARCH_MAX_FILE_BYTES) continue;
+      content = fs.readFileSync(full, "utf-8");
+    } catch {
+      continue;
+    }
+    if (content.indexOf(String.fromCharCode(0)) !== -1) continue; // skip binary files
+
+    const lines = content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].toLowerCase().includes(needle)) {
+        if (matches.length >= SEARCH_MAX_MATCHES) {
+          truncated = true;
+          break outer;
+        }
+        matches.push({
+          path: relativePath,
+          line: i + 1,
+          preview: lines[i].slice(0, SEARCH_PREVIEW_MAX),
+        });
+      }
+    }
+  }
+
+  sendJson(ws, { type: "search:result", id, matches, truncated });
 };
 
 const pushTerminalHistory = (data: string) => {
@@ -1006,6 +1058,11 @@ wss.on("connection", (ws, req) => {
         }
         case "exec:cancel": {
           runningExecs.get(msg.id)?.kill();
+          break;
+        }
+
+        case "search": {
+          if (typeof msg.query === "string") runSearch(ws, msg.id, msg.query);
           break;
         }
 

@@ -45,6 +45,13 @@ import {
   WEB_TYPES,
 } from "@/components/replEditor/_lib/constants";
 import { findEntrypoint, validateFilePath } from "@/components/replEditor/_lib/fileTree";
+import {
+  computeRangeDiff,
+  isPatchSyncError,
+  isUnsupportedFileWriteError,
+  parseServerContentLength,
+  type FilePatchChange,
+} from "@/components/replEditor/_lib/patch";
 import type {
   AppStatus,
   FileNode,
@@ -85,55 +92,13 @@ type MonacoEditorLike = {
   onDidChangeModelContent: (
     listener: (event: { changes: MonacoChange[] }) => void,
   ) => { dispose: () => void };
-};
-
-type FilePatchChange = {
-  rangeOffset: number;
-  rangeLength: number;
-  text: string;
+  // Present on the real Monaco editor; used to jump to a line (search results).
+  revealLineInCenter?: (line: number) => void;
+  setPosition?: (pos: { lineNumber: number; column: number }) => void;
+  focus?: () => void;
 };
 
 const FILE_WRITE_DEBOUNCE_MS = 650;
-
-// Minimal single-range diff between the server's known content and the current
-// editor content: strip the common prefix + suffix, send only the changed middle.
-// One range = one server-side version bump. Returns null when nothing changed.
-function computeRangeDiff(oldStr: string, newStr: string): FilePatchChange | null {
-  if (oldStr === newStr) return null;
-  const oldLen = oldStr.length;
-  const newLen = newStr.length;
-  let prefix = 0;
-  const maxPrefix = Math.min(oldLen, newLen);
-  while (prefix < maxPrefix && oldStr.charCodeAt(prefix) === newStr.charCodeAt(prefix)) prefix++;
-  let suffix = 0;
-  const maxSuffix = Math.min(oldLen, newLen) - prefix;
-  while (
-    suffix < maxSuffix &&
-    oldStr.charCodeAt(oldLen - 1 - suffix) === newStr.charCodeAt(newLen - 1 - suffix)
-  ) {
-    suffix++;
-  }
-  return {
-    rangeOffset: prefix,
-    rangeLength: oldLen - prefix - suffix,
-    text: newStr.slice(prefix, newLen - suffix),
-  };
-}
-
-function isPatchSyncError(message: string): boolean {
-  return message.includes("Patch range out of bounds") ||
-    message.includes("Stale patch version") ||
-    message.includes("File content changed; sync required");
-}
-
-function isUnsupportedFileWriteError(message: string): boolean {
-  return message.includes("Unknown message type");
-}
-
-function parseServerContentLength(message: string): number | null {
-  const match = message.match(/content length (\d+)/i);
-  return match ? Number(match[1]) : null;
-}
 
 export default function ReplEditorPage() {
   const { replId } = useParams<{ replId: string }>();
@@ -171,6 +136,8 @@ export default function ReplEditorPage() {
   const [searchTruncated, setSearchTruncated] = useState(false);
   const [searching, setSearching] = useState(false);
   const searchIdRef = useRef(0);
+  // Line to reveal once a search-selected file finishes loading into Monaco.
+  const pendingRevealRef = useRef<{ path: string; line: number } | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const termRef = useRef<HTMLDivElement | null>(null);
@@ -1015,6 +982,26 @@ export default function ReplEditorPage() {
     wsRef.current.send(JSON.stringify({ type: "search", id: String(id), query }));
   }, []);
 
+  const jumpToLine = useCallback((line: number) => {
+    const ed = editorRef.current;
+    ed?.revealLineInCenter?.(line);
+    ed?.setPosition?.({ lineNumber: line, column: 1 });
+    ed?.focus?.();
+  }, []);
+
+  // Once a search-selected file has loaded (content set + Monaco mounted), jump
+  // to the pending line. Re-runs on file switch and on content arrival.
+  useEffect(() => {
+    const pend = pendingRevealRef.current;
+    if (!pend || pend.path !== openFile) return;
+    const t = window.setTimeout(() => {
+      if (pendingRevealRef.current?.path !== openFile) return;
+      jumpToLine(pend.line);
+      pendingRevealRef.current = null;
+    }, 60);
+    return () => window.clearTimeout(t);
+  }, [openFile, fileContent, jumpToLine]);
+
   const handleFileClick = useCallback(
     (filePath: string) => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -1725,7 +1712,14 @@ export default function ReplEditorPage() {
           truncated={searchTruncated}
           loading={searching}
           onSearch={handleSearch}
-          onSelect={(path) => handleFileClick(path)}
+          onSelect={(path, line) => {
+            if (path === openFileRef.current) {
+              jumpToLine(line);
+            } else {
+              pendingRevealRef.current = { path, line };
+              handleFileClick(path);
+            }
+          }}
           onClose={() => setSearchOpen(false)}
         />
       )}

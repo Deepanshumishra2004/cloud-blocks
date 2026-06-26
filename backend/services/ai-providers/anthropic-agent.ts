@@ -80,52 +80,52 @@ export const anthropicAdapter: ProviderAdapter = async (params, onText) => {
   let buffer = "";
   try {
     for await (const chunk of stream as AsyncIterable<Buffer>) {
-    buffer += chunk.toString("utf-8");
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.startsWith("data:")) continue;
-      const payload = line.slice(5).trim();
-      if (!payload || payload === "[DONE]") continue;
-      let evt: any;
-      try { evt = JSON.parse(payload); } catch { continue; }
+      buffer += chunk.toString("utf-8");
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        let evt: any;
+        try { evt = JSON.parse(payload); } catch { continue; }
 
-      switch (evt.type) {
-        case "message_start":
-          inputTokens = evt.message?.usage?.input_tokens ?? 0;
-          break;
-        case "content_block_start":
-          blocks.set(evt.index, {
-            type: evt.content_block?.type ?? "text",
-            id: evt.content_block?.id,
-            name: evt.content_block?.name,
-            json: "",
-          });
-          break;
-        case "content_block_delta":
-          if (evt.delta?.type === "text_delta") {
-            const t = evt.delta.text ?? "";
-            text += t;
-            if (t) onText?.(t);
-          } else if (evt.delta?.type === "input_json_delta") {
+        switch (evt.type) {
+          case "message_start":
+            inputTokens = evt.message?.usage?.input_tokens ?? 0;
+            break;
+          case "content_block_start":
+            blocks.set(evt.index, {
+              type: evt.content_block?.type ?? "text",
+              id: evt.content_block?.id,
+              name: evt.content_block?.name,
+              json: "",
+            });
+            break;
+          case "content_block_delta":
+            if (evt.delta?.type === "text_delta") {
+              const t = evt.delta.text ?? "";
+              text += t;
+              if (t) onText?.(t);
+            } else if (evt.delta?.type === "input_json_delta") {
+              const b = blocks.get(evt.index);
+              if (b) b.json += evt.delta.partial_json ?? "";
+            }
+            break;
+          case "content_block_stop": {
             const b = blocks.get(evt.index);
-            if (b) b.json += evt.delta.partial_json ?? "";
+            if (b && b.type === "tool_use" && b.id && b.name) {
+              let input: Record<string, unknown> = {};
+              try { input = b.json ? JSON.parse(b.json) : {}; } catch { input = {}; }
+              toolCalls.push({ id: b.id, name: b.name, input });
+            }
+            break;
           }
-          break;
-        case "content_block_stop": {
-          const b = blocks.get(evt.index);
-          if (b && b.type === "tool_use" && b.id && b.name) {
-            let input: Record<string, unknown> = {};
-            try { input = b.json ? JSON.parse(b.json) : {}; } catch { input = {}; }
-            toolCalls.push({ id: b.id, name: b.name, input });
-          }
-          break;
+          case "message_delta":
+            outputTokens = evt.usage?.output_tokens ?? outputTokens;
+            break;
         }
-        case "message_delta":
-          outputTokens = evt.usage?.output_tokens ?? outputTokens;
-          break;
       }
-    }
     }
   } catch (err) {
     // Mid-stream failure after partial output: don't let the agent loop retry

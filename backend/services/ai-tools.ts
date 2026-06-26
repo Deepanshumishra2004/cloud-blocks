@@ -281,6 +281,66 @@ const WEB_FETCH_MAX_BYTES = 120 * 1024;
 export interface ToolExecResult {
   content: string;
   isError?: boolean;
+  /** Unified line diff for a file mutation, for the UI (not fed to the model). */
+  diff?: string;
+}
+
+// ── Inline diff for file mutations ──────────────────────────────────────────
+// A real before/after line diff (LCS) so the UI can show what actually changed
+// — for write_file/create_file the client has no prior content, so the diff is
+// computed here. Bounded: huge files fall back to a summary line; long diffs are
+// context-collapsed (3 lines around each change) and truncated.
+const DIFF_MAX_INPUT_LINES = 1200;
+const DIFF_MAX_OUTPUT_LINES = 600;
+const DIFF_CONTEXT = 3;
+
+export function unifiedDiff(oldStr: string, newStr: string): string {
+  if (oldStr === newStr) return "";
+  const a = oldStr === "" ? [] : oldStr.split("\n");
+  const b = newStr === "" ? [] : newStr.split("\n");
+  if (a.length > DIFF_MAX_INPUT_LINES || b.length > DIFF_MAX_INPUT_LINES) {
+    return `@@ ${a.length} → ${b.length} lines (file too large to diff inline) @@`;
+  }
+  const m = a.length;
+  const n = b.length;
+  // LCS length table, filled bottom-up.
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      dp[i]![j] = a[i] === b[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
+    }
+  }
+  const rows: Array<{ tag: " " | "-" | "+"; text: string }> = [];
+  let i = 0;
+  let j = 0;
+  while (i < m && j < n) {
+    if (a[i] === b[j]) { rows.push({ tag: " ", text: a[i]! }); i++; j++; }
+    else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) { rows.push({ tag: "-", text: a[i]! }); i++; }
+    else { rows.push({ tag: "+", text: b[j]! }); j++; }
+  }
+  while (i < m) rows.push({ tag: "-", text: a[i++]! });
+  while (j < n) rows.push({ tag: "+", text: b[j++]! });
+
+  // Keep only `DIFF_CONTEXT` unchanged lines around each change; collapse the rest.
+  const keep = new Array<boolean>(rows.length).fill(false);
+  rows.forEach((r, idx) => {
+    if (r.tag === " ") return;
+    for (let k = Math.max(0, idx - DIFF_CONTEXT); k <= Math.min(rows.length - 1, idx + DIFF_CONTEXT); k++) keep[k] = true;
+  });
+  const out: string[] = [];
+  let inGap = false;
+  for (let idx = 0; idx < rows.length; idx++) {
+    const row = rows[idx]!;
+    if (keep[idx]) {
+      out.push(`${row.tag}${row.text}`);
+      inGap = false;
+    } else if (!inGap) {
+      out.push("@@ …");
+      inGap = true;
+    }
+    if (out.length >= DIFF_MAX_OUTPUT_LINES) { out.push("@@ … (diff truncated)"); break; }
+  }
+  return out.join("\n");
 }
 
 function flattenTree(nodes: FileNode[], prefix = ""): string[] {
@@ -395,21 +455,28 @@ export async function executeTool(
           : content.slice(0, content.indexOf(search)) + replace + content.slice(content.indexOf(search) + search.length);
         const { conflict } = await pod.writeFile(path, next, version);
         if (conflict) return { content: `${path} changed during edit; re-read and retry.`, isError: true };
-        return { content: `Edited ${path}${replaceAll && matches > 1 ? ` (${matches} occurrences)` : ""}.` };
+        return {
+          content: `Edited ${path}${replaceAll && matches > 1 ? ` (${matches} occurrences)` : ""}.`,
+          diff: unifiedDiff(content, next),
+        };
       }
       case "write_file": {
         const path = str(input, "path");
         const content = str(input, "content");
+        // Read prior content (if any) so the UI can show a real overwrite diff.
+        let before = "";
+        try { before = (await pod.readFile(path)).content; } catch { /* new file */ }
         const { conflict } = await pod.writeFile(path, content);
         if (conflict) return { content: `${path} changed concurrently; re-read and retry.`, isError: true };
         ctx.readPaths.add(path); // we now know its content — allow follow-up edits
-        return { content: `Wrote ${path} (${content.length} bytes).` };
+        return { content: `Wrote ${path} (${content.length} bytes).`, diff: unifiedDiff(before, content) };
       }
       case "create_file": {
         const path = str(input, "path");
-        await pod.createFile(path, str(input, "content"));
+        const content = str(input, "content");
+        await pod.createFile(path, content);
         ctx.readPaths.add(path);
-        return { content: `Created ${path}.` };
+        return { content: `Created ${path}.`, diff: content ? unifiedDiff("", content) : undefined };
       }
       case "delete_file": {
         const path = str(input, "path");

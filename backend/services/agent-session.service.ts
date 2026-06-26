@@ -14,15 +14,24 @@ export interface PersistedStep {
   input?: Record<string, unknown>;
   output?: string;
   execOutput?: string;
+  diff?: string;
   isError?: boolean;
   status?: "running" | "awaiting" | "done" | "denied";
   reason?: string;
 }
 
 // Keep persisted tool output bounded — full output already streamed live.
+// Keep both ends: the head often holds the key result (a diff, a summary line),
+// the tail the conclusion (exit status, last error). A middle elision is less
+// lossy than dropping the head outright.
 const STEP_OUTPUT_MAX = 4000;
 const EXEC_OUTPUT_MAX = 4000;
-const clamp = (s: string, n: number) => (s.length <= n ? s : s.slice(-n));
+const clamp = (s: string, n: number) => {
+  if (s.length <= n) return s;
+  const head = Math.ceil(n * 0.4);
+  const tail = n - head;
+  return `${s.slice(0, head)}\n… [truncated ${s.length - n} chars] …\n${s.slice(-tail)}`;
+};
 
 export function createTurnRecorder() {
   const steps: PersistedStep[] = [];
@@ -49,6 +58,11 @@ export function createTurnRecorder() {
       case "exec_output": {
         const i = index.get(event.id);
         if (i !== undefined && steps[i]) steps[i].execOutput = clamp((steps[i].execOutput ?? "") + event.data, EXEC_OUTPUT_MAX);
+        break;
+      }
+      case "diff": {
+        const i = index.get(event.id);
+        if (i !== undefined && steps[i]) steps[i].diff = clamp(event.patch, STEP_OUTPUT_MAX);
         break;
       }
       case "tool_result": {

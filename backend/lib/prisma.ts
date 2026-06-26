@@ -10,6 +10,11 @@ declare global {
 function createPrismaClient() {
   const adapter = new PrismaPg({
     connectionString: env.DATABASE_URL,
+    // pg 8.22+ treats `sslmode=require` in the URL as `verify-full`, which fails
+    // cert-chain/hostname verification against the Neon pooler inside the alpine
+    // container and surfaces as P1001 DatabaseNotReachable. The connection is
+    // still TLS-encrypted; we just skip strict chain verification (managed PG).
+    ssl: { rejectUnauthorized: false },
   });
 
   return new PrismaClient({
@@ -49,14 +54,25 @@ export async function refreshPrismaClient() {
   return prisma;
 }
 
-export async function withPrismaRetry<T>(operation: (db: PrismaClient) => Promise<T>): Promise<T> {
-  try {
-    return await operation(prisma);
-  } catch (error) {
-    if (!isDatabaseReachabilityError(error)) throw error;
+export async function withPrismaRetry<T>(operation: (db: PrismaClient) => Promise<T>, attempts = 4): Promise<T> {
+  let lastError: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await operation(prisma);
+    } catch (error) {
+      lastError = error;
+      // Only reachability errors are recoverable by reconnecting — anything else
+      // (validation, constraint, etc.) is a real failure; surface it immediately.
+      if (!isDatabaseReachabilityError(error)) throw error;
+      if (i === attempts - 1) break;
 
-    logger.warn({ err: error }, "prisma client lost database reachability; recreating client and retrying once");
-    const nextClient = await refreshPrismaClient();
-    return operation(nextClient);
+      // A cold/unreachable DB at boot can wedge the pooled client; a single retry
+      // isn't enough. Recreate the client and back off so it self-heals once the
+      // database is reachable again, instead of needing a manual restart.
+      logger.warn({ err: error, attempt: i + 1 }, "prisma lost database reachability; recreating client and retrying");
+      await refreshPrismaClient();
+      await new Promise((r) => setTimeout(r, 500 * 2 ** i));
+    }
   }
+  throw lastError;
 }

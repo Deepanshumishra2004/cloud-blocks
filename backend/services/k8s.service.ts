@@ -185,12 +185,14 @@ export const provisionReplRuntime = async (replId: string, type: string, userId:
           ],
           resources: {
             requests: {
-              cpu: "100m",
-              memory: "128Mi",
+              cpu: "250m",
+              memory: "512Mi",
             },
             limits: {
-              cpu: "500m",
-              memory: "512Mi",
+              // Next/Vite dev + Turbopack compile needs real CPU and RAM; at
+              // 0.5 CPU / 512Mi the first compile thrashes and never finishes.
+              cpu: "2",
+              memory: "2Gi",
             },
           },
           readinessProbe: {

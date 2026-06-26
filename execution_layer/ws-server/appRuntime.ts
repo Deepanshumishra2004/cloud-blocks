@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
+import { execSync, spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import fs from "fs";
 import path from "path";
 
@@ -28,7 +28,10 @@ const REACT_PREVIEW_PORT = 5173;
 const NEXT_PREVIEW_PORT = 3000;
 
 function getInstallCommand(hasBunLock: boolean): string {
-  return hasBunLock ? "bun install --frozen-lockfile" : "bun install";
+  // Frozen install is fast + reproducible, but aborts the whole `set -e` script
+  // when bun.lock drifts from package.json. Fall back to a normal install so a
+  // stale lockfile self-heals instead of surfacing as "Code error".
+  return hasBunLock ? "bun install --frozen-lockfile || bun install" : "bun install";
 }
 
 function scriptExists(scripts: Record<string, unknown> | undefined, name: string): boolean {
@@ -83,8 +86,8 @@ export function getAppRunCommand(args: RunCommandArgs): string {
     if (scriptExists(args.packageScripts, "start")) return `set -euo pipefail\n${install}bun run start`;
   }
 
-  if (type === "bun") return "set -euo pipefail\nbun run index.ts";
-  if (type === "node" || type === "javascript") return "set -euo pipefail\nnode index.js";
+  if (type === "bun") return `set -euo pipefail\n${install}bun run index.ts`;
+  if (type === "node" || type === "javascript") return `set -euo pipefail\n${install}node index.js`;
 
   throw new Error(`Run Code is not configured for repl type: ${args.replType}`);
 }
@@ -150,6 +153,18 @@ export function createAppRuntime(args: AppRuntimeArgs) {
 
     fs.mkdirSync(path.dirname(args.previewLogPath), { recursive: true });
     fs.writeFileSync(args.previewLogPath, "", "utf-8");
+
+    // Files restored from R2 / written by the root ws-server are root-owned, but
+    // the app runs as `sandbox` and must be able to write into the workspace
+    // (e.g. Next's generated next-env.d.ts, .next/, vite caches). Without this the
+    // dev server crashes with EACCES and the readiness probe times out. Hand the
+    // tree to sandbox right before launch.
+    try {
+      execSync(`chown -R sandbox:sandbox ${shellQuote(args.workspace)}`, { stdio: "ignore" });
+    } catch (err) {
+      args.onOutput(`\n[warn: could not chown workspace to sandbox: ${(err as Error).message}]\n`);
+    }
+
     args.onOutput(`$ ${command.split("\n").at(-1) ?? "run"}\n`);
     setStatus("starting");
 

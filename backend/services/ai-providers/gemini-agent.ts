@@ -45,9 +45,12 @@ function toGeminiContents(messages: AgentMessage[]) {
   return contents;
 }
 
+// Streaming via streamGenerateContent (alt=sse): each SSE event is a partial
+// GenerateContentResponse. Text parts are forwarded to onText as they arrive;
+// functionCall parts are collected (Gemini emits them whole, not fragmented).
 export const geminiAdapter: ProviderAdapter = async (params, onText) => {
-  const url = `${params.baseUrl.replace(/\/$/, "")}/models/${params.model}:generateContent`;
-  const { data } = await axios.post(
+  const url = `${params.baseUrl.replace(/\/$/, "")}/models/${params.model}:streamGenerateContent?alt=sse`;
+  const { data: stream } = await axios.post(
     url,
     {
       systemInstruction: { parts: [{ text: params.system }] },
@@ -66,33 +69,64 @@ export const geminiAdapter: ProviderAdapter = async (params, onText) => {
     {
       headers: { "Content-Type": "application/json", "x-goog-api-key": params.apiKey },
       signal: params.signal,
+      responseType: "stream",
       timeout: 180_000,
     },
   );
 
-  const parts: GeminiPart[] = data.candidates?.[0]?.content?.parts ?? [];
   let text = "";
+  let inputTokens = 0;
+  let outputTokens = 0;
   const toolCalls: ToolCall[] = [];
-  parts.forEach((part, i) => {
-    if ("text" in part) text += part.text ?? "";
-    else if ("functionCall" in part) {
-      toolCalls.push({
-        id: `${part.functionCall.name}__${i}`,
-        name: part.functionCall.name,
-        input: part.functionCall.args ?? {},
-      });
+  let fnIndex = 0;
+
+  let buffer = "";
+  try {
+    for await (const chunk of stream as AsyncIterable<Buffer>) {
+      buffer += chunk.toString("utf-8");
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        let evt: any;
+        try { evt = JSON.parse(payload); } catch { continue; }
+
+        const parts: GeminiPart[] = evt.candidates?.[0]?.content?.parts ?? [];
+        for (const part of parts) {
+          if ("text" in part) {
+            const t = part.text ?? "";
+            text += t;
+            if (t) onText?.(t);
+          } else if ("functionCall" in part) {
+            toolCalls.push({
+              id: `${part.functionCall.name}__${fnIndex++}`,
+              name: part.functionCall.name,
+              input: part.functionCall.args ?? {},
+            });
+          }
+        }
+
+        if (evt.usageMetadata) {
+          inputTokens = evt.usageMetadata.promptTokenCount ?? inputTokens;
+          outputTokens = evt.usageMetadata.candidatesTokenCount ?? outputTokens;
+        }
+      }
     }
-  });
-  if (text) onText?.(text);
+  } catch (err) {
+    // Mid-stream failure after partial output: replaying would duplicate it.
+    if (text.length > 0 || toolCalls.length > 0) {
+      (err as { noRetry?: boolean }).noRetry = true;
+    }
+    throw err;
+  }
 
   return {
     text,
     toolCalls,
     done: toolCalls.length === 0,
-    usage: {
-      inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
-      outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
-    },
+    usage: { inputTokens, outputTokens },
   };
 };
 

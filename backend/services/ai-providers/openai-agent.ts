@@ -52,6 +52,9 @@ function parseArgs(raw: string): Record<string, unknown> {
   }
 }
 
+// Streaming Chat Completions: text deltas are forwarded to onText as they
+// arrive; tool_call argument fragments are accumulated by their `index` since
+// providers split a single call's JSON across many delta chunks.
 export const openaiAdapter: ProviderAdapter = async (params, onText) => {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${params.apiKey}`,
@@ -63,7 +66,7 @@ export const openaiAdapter: ProviderAdapter = async (params, onText) => {
     headers["X-Title"] = "CloudBlocks";
   }
 
-  const { data } = await axios.post(
+  const { data: stream } = await axios.post(
     `${params.baseUrl.replace(/\/$/, "")}/chat/completions`,
     {
       model: params.model,
@@ -74,29 +77,74 @@ export const openaiAdapter: ProviderAdapter = async (params, onText) => {
         function: { name: t.name, description: t.description, parameters: t.parameters },
       })),
       tool_choice: "auto",
+      stream: true,
+      stream_options: { include_usage: true },
     },
-    { headers, signal: params.signal, timeout: 180_000 },
+    { headers, signal: params.signal, responseType: "stream", timeout: 180_000 },
   );
 
-  const choice = data.choices?.[0];
-  const message = choice?.message ?? {};
-  const text: string = message.content ?? "";
-  if (text) onText?.(text);
+  let text = "";
+  let inputTokens = 0;
+  let outputTokens = 0;
+  // Tool calls assembled by streamed `index`; arguments arrive as JSON fragments.
+  const calls = new Map<number, { id: string; name: string; args: string }>();
 
-  const rawCalls: OpenAIToolCall[] = message.tool_calls ?? [];
-  const toolCalls: ToolCall[] = rawCalls.map((c, i) => ({
-    id: c.id || `call_${i}`,
-    name: c.function?.name ?? "",
-    input: parseArgs(c.function?.arguments ?? "{}"),
-  }));
+  let buffer = "";
+  try {
+    for await (const chunk of stream as AsyncIterable<Buffer>) {
+      buffer += chunk.toString("utf-8");
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        let evt: any;
+        try { evt = JSON.parse(payload); } catch { continue; }
+
+        if (evt.usage) {
+          inputTokens = evt.usage.prompt_tokens ?? inputTokens;
+          outputTokens = evt.usage.completion_tokens ?? outputTokens;
+        }
+
+        const delta = evt.choices?.[0]?.delta;
+        if (!delta) continue;
+
+        if (delta.content) {
+          text += delta.content;
+          onText?.(delta.content);
+        }
+
+        for (const tc of delta.tool_calls ?? []) {
+          const idx = tc.index ?? 0;
+          const cur = calls.get(idx) ?? { id: "", name: "", args: "" };
+          if (tc.id) cur.id = tc.id;
+          if (tc.function?.name) cur.name = tc.function.name;
+          if (tc.function?.arguments) cur.args += tc.function.arguments;
+          calls.set(idx, cur);
+        }
+      }
+    }
+  } catch (err) {
+    // Mid-stream failure after partial output: replaying would duplicate it.
+    if (text.length > 0 || calls.size > 0) {
+      (err as { noRetry?: boolean }).noRetry = true;
+    }
+    throw err;
+  }
+
+  const toolCalls: ToolCall[] = [...calls.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([idx, c]) => ({
+      id: c.id || `call_${idx}`,
+      name: c.name,
+      input: parseArgs(c.args || "{}"),
+    }));
 
   return {
     text,
     toolCalls,
     done: toolCalls.length === 0,
-    usage: {
-      inputTokens: data.usage?.prompt_tokens ?? 0,
-      outputTokens: data.usage?.completion_tokens ?? 0,
-    },
+    usage: { inputTokens, outputTokens },
   };
 };

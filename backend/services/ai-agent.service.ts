@@ -33,6 +33,12 @@ function clampForModel(content: string): string {
   return `${head}\n… [truncated ${content.length - TOOL_RESULT_MAX_CHARS} chars; re-read a narrower range if you need more]`;
 }
 
+// An aborted request (user hit stop / client disconnected) — never retry it.
+function isAbortError(err: unknown): boolean {
+  const e = err as { code?: string; name?: string } | null;
+  return e?.code === "ERR_CANCELED" || e?.name === "CanceledError" || e?.name === "AbortError";
+}
+
 // Transparent retry for transient provider errors (rate limit / 5xx / network).
 async function withTransientRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   let lastErr: unknown;
@@ -41,6 +47,8 @@ async function withTransientRetry<T>(fn: () => Promise<T>, attempts = 3): Promis
       return await fn();
     } catch (err) {
       lastErr = err;
+      // Abort cancels the in-flight request — retrying would just re-cancel.
+      if (isAbortError(err)) throw err;
       // Once a streaming adapter has emitted text, retrying would replay it and
       // duplicate output in the UI — the adapter marks such errors noRetry.
       if ((err as { noRetry?: boolean })?.noRetry) throw err;
@@ -78,6 +86,7 @@ export type AgentEvent =
   | { kind: "awaiting_approval"; id: string; name: string; input: Record<string, unknown>; reason: string }
   | { kind: "exec_output"; id: string; data: string }
   | { kind: "tool_result"; id: string; name: string; output: string; isError: boolean }
+  | { kind: "diff"; id: string; patch: string }
   | { kind: "todo"; todos: Array<{ content: string; status: "pending" | "in_progress" | "completed" }> }
   | { kind: "subagent"; id: string; subagentType: string; phase: "start" | "end"; summary?: string }
   | { kind: "awaiting_question"; id: string; question: string; header?: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }
@@ -231,6 +240,7 @@ async function runSubagentLoop(args: {
   type: SubagentType;
   task: string;
   replType: string;
+  signal?: AbortSignal;
   onProgress: (chunk: string) => void;
 }): Promise<{ summary: string; outputTokens: number }> {
   const tools = subagentTools(args.type);
@@ -241,9 +251,10 @@ async function runSubagentLoop(args: {
   let lastText = "";
 
   for (let step = 0; step < SUBAGENT_MAX_STEPS; step++) {
+    if (args.signal?.aborted) { lastText += "\n[subagent stopped: aborted]"; break; }
     const result = await withTransientRetry(() =>
       args.adapter(
-        { apiKey: args.apiKey, baseUrl: args.baseUrl, model: args.model, system, messages, tools, maxTokens: STEP_MAX_TOKENS },
+        { apiKey: args.apiKey, baseUrl: args.baseUrl, model: args.model, system, messages, tools, maxTokens: STEP_MAX_TOKENS, signal: args.signal },
         (delta) => args.onProgress(delta),
       ),
     );
@@ -310,14 +321,15 @@ export function startAgentRun(opts: StartAgentRunOptions, emit: (event: AgentEve
   const done = (async () => {
     let outputTokens = 0;
     let pod: PodControl | null = null;
+    // Hoisted so the catch can persist a balanced partial transcript on abort.
+    const messages: AgentMessage[] = [
+      ...trimHistory(opts.history ?? []),
+      { role: "user", content: opts.task, ...(opts.images?.length ? { images: opts.images } : {}) },
+    ];
     try {
       pod = await PodControl.connect(opts.replId, opts.userId);
 
       const projectInstructions = await loadProjectInstructions(pod);
-      const messages: AgentMessage[] = [
-        ...trimHistory(opts.history ?? []),
-        { role: "user", content: opts.task, ...(opts.images?.length ? { images: opts.images } : {}) },
-      ];
       const system = buildSystemPrompt(opts.replType, projectInstructions);
       const toolCtx = createToolContext();
       let didWrite = false;
@@ -359,6 +371,7 @@ export function startAgentRun(opts: StartAgentRunOptions, emit: (event: AgentEve
               type: "verify",
               task: `A change was just made for this task: "${opts.task}". Verify it actually works — run the build, tests, type-check, or the app as appropriate and report PASS or FAIL with the exact commands and output. Do not modify any files.`,
               replType: opts.replType,
+              signal: abortController.signal,
               onProgress: (chunk) => emit({ kind: "exec_output", id: verifyId, data: chunk }),
             });
             outputTokens += vTokens;
@@ -439,6 +452,7 @@ export function startAgentRun(opts: StartAgentRunOptions, emit: (event: AgentEve
               type: subType,
               task: subTask,
               replType: opts.replType,
+              signal: abortController.signal,
               onProgress: (chunk) => emit({ kind: "exec_output", id: call.id, data: chunk }),
             });
             outputTokens += subTokens;
@@ -450,6 +464,7 @@ export function startAgentRun(opts: StartAgentRunOptions, emit: (event: AgentEve
             emit({ kind: "exec_output", id: call.id, data: chunk }),
           );
           if (!out.isError && MUTATING_TOOLS.has(call.name)) didWrite = true;
+          if (out.diff) emit({ kind: "diff", id: call.id, patch: out.diff });
           record(call, out.content, Boolean(out.isError));
         };
 
@@ -506,6 +521,13 @@ export function startAgentRun(opts: StartAgentRunOptions, emit: (event: AgentEve
       emit({ kind: "done", reason: "max_steps" });
       return { reason: "max_steps" as const, outputTokens, messages };
     } catch (err) {
+      // An abort surfaces here as a cancelled request, not a real failure. The
+      // in-flight step's assistant message was never pushed, so `messages` is
+      // balanced (no orphaned tool_use) and safe to persist for resume.
+      if (isAbortError(err) || runs.get(runId)?.aborted) {
+        emit({ kind: "done", reason: "aborted" });
+        return { reason: "aborted" as const, outputTokens, messages };
+      }
       const message = err instanceof Error ? err.message : "Agent run failed";
       logger.error({ err, replId: opts.replId }, "[ai-agent] run error");
       emit({ kind: "error", message });
@@ -514,7 +536,7 @@ export function startAgentRun(opts: StartAgentRunOptions, emit: (event: AgentEve
       for (const { timer } of approvals.values()) clearTimeout(timer);
       for (const { timer } of questions.values()) clearTimeout(timer);
       runs.delete(runId);
-      try { pod?.close(); } catch { /* ignore */ }
+      try { pod?.close(); } catch (err) { logger.warn({ err, replId: opts.replId }, "[ai-agent] pod close failed"); }
     }
   })();
 

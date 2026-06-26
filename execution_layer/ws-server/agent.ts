@@ -85,7 +85,8 @@ type ClientMessage =
       changes: FilePatchChange[];
     }
   | { type: "exec"; id: string; command: string }
-  | { type: "exec:cancel"; id: string };
+  | { type: "exec:cancel"; id: string }
+  | { type: "search"; id: string; query: string };
 
 type ServerMessage =
   | { type: "status"; status: "RUNNING" | "STOPPED" }
@@ -106,6 +107,7 @@ type ServerMessage =
   // one-shot command execution driven by the AI agent (backend control channel)
   | { type: "exec:output"; id: string; data: string }
   | { type: "exec:exit"; id: string; code: number | null; signal: string | null; truncated: boolean }
+  | { type: "search:result"; id: string; matches: { path: string; line: number; preview: string }[]; truncated: boolean }
   | { type: "error"; message: string };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -148,6 +150,14 @@ const legacySnapshotPrefix = `repls/${REPL_ID}/`;
 // Shared PTY — one shell for the whole repl, shared across all WebSocket clients
 let sharedPty: IPty | null = null;
 let ptyRestarting = false; // guard against concurrent PTY creation during restart window
+// Crash-loop guard: a shell that exits almost immediately must not be respawned
+// forever on a tight timer (it pegs CPU and floods the terminal). Track rapid
+// exits and back off, then give up until the next explicit terminal input.
+let ptyLastSpawnAt = 0;
+let ptyRapidExits = 0;
+let ptyGaveUp = false;
+const PTY_RAPID_EXIT_MS = 2_000;   // exit sooner than this counts as a crash loop
+const PTY_MAX_RAPID_EXITS = 5;     // after this many, stop auto-restarting
 
 // Set once the preview app server responds to a health probe; sent to new clients on connect
 let previewReadyUrl: string | null = null;
@@ -158,18 +168,24 @@ const buildPtyShellCommand = () => `cd ${WORKSPACE} && exec /bin/bash -i`;
 
 // ── PTY Management ────────────────────────────────────────────────────────────
 
+const PTY_STUB: IPty = { onData: () => {}, onExit: () => {}, write: () => {}, resize: () => {}, kill: () => {}, pid: -1 };
+
 function getOrCreatePty(cols = 80, rows = 24): IPty {
   if (sharedPty) return sharedPty;
-  if (ptyRestarting) {
-    // PTY is mid-restart; return a stub that silently discards writes
-    return { onData: () => {}, onExit: () => {}, write: () => {}, resize: () => {}, kill: () => {}, pid: -1 };
-  }
+  // Mid-restart, or paused after a crash loop — return a stub that discards writes.
+  // The crash-loop pause is lifted by resumePty() on the next terminal input.
+  if (ptyRestarting || ptyGaveUp) return PTY_STUB;
 
   // Run shell as unprivileged "sandbox" user so it cannot:
   //   • read /proc/1/environ (ws-server secrets)
   //   • kill the ws-server process (different UID)
   //   • access /app (chmod 700, root-owned)
-  sharedPty = pty.spawn("su", ["-s", "/bin/bash", "sandbox", "-c", buildPtyShellCommand()], {
+  // `--pty` (util-linux su) allocates a real controlling terminal for the shell.
+  // Without it, `su -c` leaves bash with no controlling tty ("cannot set terminal
+  // process group" / "no job control"); bash then reads EOF and exits immediately,
+  // which the restart logic below turned into a tight infinite respawn loop.
+  ptyLastSpawnAt = Date.now();
+  sharedPty = pty.spawn("su", ["--pty", "-s", "/bin/bash", "sandbox", "-c", buildPtyShellCommand()], {
     name: "xterm-256color",
     cols,
     rows,
@@ -196,16 +212,34 @@ function getOrCreatePty(cols = 80, rows = 24): IPty {
   });
 
   sharedPty.onExit(({ exitCode }) => {
-    console.log(`[pty] shell exited (code ${exitCode}) — restarting in 500ms`);
     sharedPty = null;
+
+    // Classify: did the shell die almost immediately (crash loop) or after real use?
+    const aliveMs = Date.now() - ptyLastSpawnAt;
+    if (aliveMs < PTY_RAPID_EXIT_MS) ptyRapidExits += 1;
+    else ptyRapidExits = 0; // ran long enough to be a normal session exit — reset
+
     if (clients.size === 0) return;
+
+    if (ptyRapidExits >= PTY_MAX_RAPID_EXITS) {
+      // Stop the infinite respawn. Surface a clear message; a later terminal:input
+      // (user pressing a key) resets the guard and tries once more.
+      ptyGaveUp = true;
+      console.warn(`[pty] shell crash-looped (${ptyRapidExits} rapid exits) — pausing restarts`);
+      pushTerminalHistory(
+        `\r\n\x1b[31m─── terminal stopped after repeated immediate exits (code ${exitCode}); press a key to retry ───\x1b[0m\r\n`,
+      );
+      return;
+    }
+
     ptyRestarting = true;
-    // Preserve scrollback — append a visible separator so users know the shell restarted
     pushTerminalHistory(`\r\n\x1b[33m─── shell restarted (exit ${exitCode}) ───\x1b[0m\r\n`);
+    // Exponential backoff instead of a fixed 500ms tight loop.
+    const delay = Math.min(500 * 2 ** ptyRapidExits, 8_000);
     setTimeout(() => {
       ptyRestarting = false;
       sharedPty = getOrCreatePty();
-    }, 500);
+    }, delay);
   });
 
   return sharedPty;
@@ -318,6 +352,56 @@ const runExec = (ws: WebSocket, id: string, command: string): void => {
   child.on("exit", (code, signal) => finish(code, signal));
 
   runningExecs.set(id, { kill: killTree });
+};
+
+// ── Project search ───────────────────────────────────────────────────────
+// Plain case-insensitive substring grep over the workspace. Skips ignored dirs
+// (node_modules, .git, …), large/binary files, and caps total matches so a
+// broad query can't stream forever.
+const SEARCH_MAX_MATCHES = 300;
+const SEARCH_MAX_FILE_BYTES = 512 * 1024;
+const SEARCH_PREVIEW_MAX = 240;
+
+const runSearch = (ws: WebSocket, id: string, rawQuery: string): void => {
+  const query = rawQuery.trim();
+  if (!query) {
+    sendJson(ws, { type: "search:result", id, matches: [], truncated: false });
+    return;
+  }
+
+  const needle = query.toLowerCase();
+  const matches: { path: string; line: number; preview: string }[] = [];
+  let truncated = false;
+
+  const files = listWorkspaceFiles(WORKSPACE);
+  outer: for (const relativePath of files) {
+    let content: string;
+    try {
+      const full = workspacePath(relativePath);
+      if (fs.statSync(full).size > SEARCH_MAX_FILE_BYTES) continue;
+      content = fs.readFileSync(full, "utf-8");
+    } catch {
+      continue;
+    }
+    if (content.indexOf(String.fromCharCode(0)) !== -1) continue; // skip binary files
+
+    const lines = content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].toLowerCase().includes(needle)) {
+        if (matches.length >= SEARCH_MAX_MATCHES) {
+          truncated = true;
+          break outer;
+        }
+        matches.push({
+          path: relativePath,
+          line: i + 1,
+          preview: lines[i].slice(0, SEARCH_PREVIEW_MAX),
+        });
+      }
+    }
+  }
+
+  sendJson(ws, { type: "search:result", id, matches, truncated });
 };
 
 const pushTerminalHistory = (data: string) => {
@@ -893,6 +977,11 @@ wss.on("connection", (ws, req) => {
 
         // ── Terminal ────────────────────────────────────────────────────────
         case "terminal:input": {
+          // A keypress after a crash-loop pause clears the guard and retries once.
+          if (ptyGaveUp) {
+            ptyGaveUp = false;
+            ptyRapidExits = 0;
+          }
           if (msg.data) getOrCreatePty().write(msg.data);
           break;
         }
@@ -1009,6 +1098,11 @@ wss.on("connection", (ws, req) => {
           break;
         }
 
+        case "search": {
+          if (typeof msg.query === "string") runSearch(ws, msg.id, msg.query);
+          break;
+        }
+
         default:
           sendJson(ws, { type: "error", message: "Unknown message type" });
       }
@@ -1034,10 +1128,18 @@ const appPort = TEMPLATE_APP_PORTS[REPL_TYPE] ?? 3000;
 const previewServer = http.createServer(async (req, res) => {
   try {
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
+    // Rewrite host/origin/referer to the upstream so the dev server sees a
+    // same-origin request. Without this, Next/Vite block cross-origin dev traffic
+    // (HMR, RSC, server actions) coming through the external preview host and the
+    // preview never live-updates on edits.
+    const upstreamOrigin = `http://localhost:${appPort}`;
+    const proxiedHeaders: http.IncomingHttpHeaders = { ...req.headers, host: `localhost:${appPort}` };
+    if (proxiedHeaders.origin) proxiedHeaders.origin = upstreamOrigin;
+    if (proxiedHeaders.referer) proxiedHeaders.referer = `${upstreamOrigin}${req.url}`;
     const response = await axios({
       method: req.method as string,
       url: `http://localhost:${appPort}${req.url}`,
-      headers: { ...req.headers, host: `localhost:${appPort}` },
+      headers: proxiedHeaders,
       data: hasBody ? req : undefined,
       responseType: "stream",
       validateStatus: () => true,
@@ -1060,9 +1162,15 @@ previewServer.on("upgrade", (req, clientSocket, head) => {
     for (const key of Object.keys(headers)) {
       const value = headers[key];
       if (value === undefined) continue;
-      // rewrite host so the dev server's own host checks pass
-      if (key.toLowerCase() === "host") {
+      const lower = key.toLowerCase();
+      // Rewrite host + origin so the dev server's same-origin / allowed-hosts
+      // checks pass for the HMR websocket (else live reload silently never fires).
+      if (lower === "host") {
         headerLines.push(`host: localhost:${appPort}`);
+        continue;
+      }
+      if (lower === "origin") {
+        headerLines.push(`origin: http://localhost:${appPort}`);
         continue;
       }
       if (Array.isArray(value)) {

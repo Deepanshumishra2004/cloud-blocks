@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { cn } from "@/lib/cn";
 import { useToast } from "@/components/ui/Toast";
 import {
   fetchAiCredentials,
@@ -36,16 +37,26 @@ import {
   TerminalIcon,
 } from "@/components/replEditor/icons";
 import { PanelTab } from "@/components/replEditor/PanelTab";
+import { QuickOpen } from "@/components/replEditor/QuickOpen";
+import { ProjectSearch } from "@/components/replEditor/ProjectSearch";
 import {
   EXT_LANG,
   LANG_MAP,
   WEB_TYPES,
 } from "@/components/replEditor/_lib/constants";
-import { findEntrypoint } from "@/components/replEditor/_lib/fileTree";
+import { findEntrypoint, validateFilePath } from "@/components/replEditor/_lib/fileTree";
+import {
+  computeRangeDiff,
+  isPatchSyncError,
+  isUnsupportedFileWriteError,
+  parseServerContentLength,
+  type FilePatchChange,
+} from "@/components/replEditor/_lib/patch";
 import type {
   AppStatus,
   FileNode,
   ReplStatus,
+  SearchMatch,
   WsMsg,
 } from "@/components/replEditor/_lib/types";
 
@@ -81,55 +92,13 @@ type MonacoEditorLike = {
   onDidChangeModelContent: (
     listener: (event: { changes: MonacoChange[] }) => void,
   ) => { dispose: () => void };
-};
-
-type FilePatchChange = {
-  rangeOffset: number;
-  rangeLength: number;
-  text: string;
+  // Present on the real Monaco editor; used to jump to a line (search results).
+  revealLineInCenter?: (line: number) => void;
+  setPosition?: (pos: { lineNumber: number; column: number }) => void;
+  focus?: () => void;
 };
 
 const FILE_WRITE_DEBOUNCE_MS = 650;
-
-// Minimal single-range diff between the server's known content and the current
-// editor content: strip the common prefix + suffix, send only the changed middle.
-// One range = one server-side version bump. Returns null when nothing changed.
-function computeRangeDiff(oldStr: string, newStr: string): FilePatchChange | null {
-  if (oldStr === newStr) return null;
-  const oldLen = oldStr.length;
-  const newLen = newStr.length;
-  let prefix = 0;
-  const maxPrefix = Math.min(oldLen, newLen);
-  while (prefix < maxPrefix && oldStr.charCodeAt(prefix) === newStr.charCodeAt(prefix)) prefix++;
-  let suffix = 0;
-  const maxSuffix = Math.min(oldLen, newLen) - prefix;
-  while (
-    suffix < maxSuffix &&
-    oldStr.charCodeAt(oldLen - 1 - suffix) === newStr.charCodeAt(newLen - 1 - suffix)
-  ) {
-    suffix++;
-  }
-  return {
-    rangeOffset: prefix,
-    rangeLength: oldLen - prefix - suffix,
-    text: newStr.slice(prefix, newLen - suffix),
-  };
-}
-
-function isPatchSyncError(message: string): boolean {
-  return message.includes("Patch range out of bounds") ||
-    message.includes("Stale patch version") ||
-    message.includes("File content changed; sync required");
-}
-
-function isUnsupportedFileWriteError(message: string): boolean {
-  return message.includes("Unknown message type");
-}
-
-function parseServerContentLength(message: string): number | null {
-  const match = message.match(/content length (\d+)/i);
-  return match ? Number(match[1]) : null;
-}
 
 export default function ReplEditorPage() {
   const { replId } = useParams<{ replId: string }>();
@@ -152,6 +121,7 @@ export default function ReplEditorPage() {
   const [appBusy, setAppBusy] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewFrameKey, setPreviewFrameKey] = useState(0);
+  const [previewDevice, setPreviewDevice] = useState<"full" | "tablet" | "mobile">("full");
   const [activePanel, setActivePanel] = useState<"preview" | "output" | "agent">("output");
   const [outputLog, setOutputLog] = useState("");
   const [aiCredentials, setAiCredentials] = useState<AiCredential[]>([]);
@@ -160,6 +130,14 @@ export default function ReplEditorPage() {
   const [renameName, setRenameName] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [terminalError, setTerminalError] = useState<string | null>(null);
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
+  const [searchTruncated, setSearchTruncated] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const searchIdRef = useRef(0);
+  // Line to reveal once a search-selected file finishes loading into Monaco.
+  const pendingRevealRef = useRef<{ path: string; line: number } | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const termRef = useRef<HTMLDivElement | null>(null);
@@ -352,6 +330,9 @@ export default function ReplEditorPage() {
       if (previousSocket) {
         previousSocket.onclose = null;
         previousSocket.onerror = null;
+        // Also drop onmessage: a message buffered before close() can otherwise
+        // still fire on the dead socket and clobber state with stale content.
+        previousSocket.onmessage = null;
         if (previousSocket.readyState === WebSocket.CONNECTING || previousSocket.readyState === WebSocket.OPEN) {
           previousSocket.close();
         }
@@ -386,6 +367,10 @@ export default function ReplEditorPage() {
       };
 
       ws.onmessage = (event) => {
+        // Ignore late messages from a socket that's been superseded by a newer
+        // connect (reconnect / runtime URL change).
+        if (myId !== connectIdRef.current) return;
+
         let message: WsMsg;
 
         try {
@@ -586,6 +571,14 @@ export default function ReplEditorPage() {
             outputLogRef.current = `${outputLogRef.current}${message.data}`.slice(-40_000);
             setOutputLog(outputLogRef.current);
             break;
+          case "search:result":
+            // Ignore results from a superseded query (debounce / fast typing).
+            if (Number(message.id) === searchIdRef.current) {
+              setSearchMatches(message.matches);
+              setSearchTruncated(message.truncated);
+              setSearching(false);
+            }
+            break;
           case "error":
             if (isUnsupportedFileWriteError(message.message) && supportsFileWriteRef.current) {
               supportsFileWriteRef.current = false;
@@ -703,8 +696,18 @@ export default function ReplEditorPage() {
 
     return () => {
       intentionalCloseRef.current = true;
+      // Invalidate any in-flight connect/reconnect so its callbacks no-op.
+      connectIdRef.current++;
       if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
-      wsRef.current?.close();
+      const socket = wsRef.current;
+      if (socket) {
+        // Detach every handler before close so nothing fires setState after unmount.
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onclose = null;
+        socket.onerror = null;
+        socket.close();
+      }
     };
   }, [replId, connectWs, toast]);
 
@@ -851,14 +854,6 @@ export default function ReplEditorPage() {
 
   useEffect(() => {
     return () => {
-      if (patchTimerRef.current !== null) {
-        window.clearTimeout(patchTimerRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    return () => {
       writeWaitersRef.current.forEach((waiters) => {
         waiters.forEach((notify) => notify());
       });
@@ -868,9 +863,16 @@ export default function ReplEditorPage() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key === "s") {
+      const mod = event.metaKey || event.ctrlKey;
+      if (mod && event.key === "s") {
         event.preventDefault();
         handleSave();
+      } else if (mod && (event.key === "p" || event.key === "P") && !event.shiftKey) {
+        event.preventDefault();
+        setQuickOpen((v) => !v);
+      } else if (mod && event.shiftKey && (event.key === "f" || event.key === "F")) {
+        event.preventDefault();
+        setSearchOpen((v) => !v);
       }
     };
 
@@ -881,7 +883,7 @@ export default function ReplEditorPage() {
   const handleTabClick = useCallback(
     (tabPath: string) => {
       if (tabPath === openFile) return;
-      if (openFile) fileContentsCache.current.set(openFile, fileContent);
+      if (openFile) fileContentsCache.current.set(openFile, fileContentRef.current);
       const cached = fileContentsCache.current.get(tabPath);
       setOpenFile(tabPath);
       if (cached !== undefined) {
@@ -894,12 +896,18 @@ export default function ReplEditorPage() {
         openFileFromWs(wsRef.current, tabPath);
       }
     },
-    [openFile, fileContent],
+    [openFile],
   );
 
   const handleTabClose = useCallback(
     (tabPath: string, e: React.MouseEvent) => {
       e.stopPropagation();
+      // Guard against losing unsynced edits — the buffer is dropped from the
+      // cache below, so without this an accidental close silently discards work.
+      if (dirtyFilesRef.current.has(tabPath)) {
+        const ok = window.confirm(`"${tabPath}" has unsaved changes. Close anyway and discard them?`);
+        if (!ok) return;
+      }
       setOpenTabs((prev) => {
         const next = prev.filter((p) => p !== tabPath);
         if (tabPath === openFile) {
@@ -927,8 +935,13 @@ export default function ReplEditorPage() {
   );
 
   const handleCreateFile = useCallback((name: string) => {
-    wsRef.current?.send(JSON.stringify({ type: "file:create", path: name }));
-  }, []);
+    const error = validateFilePath(name);
+    if (error) {
+      toast.error("Invalid file name", error);
+      return;
+    }
+    wsRef.current?.send(JSON.stringify({ type: "file:create", path: name.trim() }));
+  }, [toast]);
 
   const handleDeleteFile = useCallback(
     (filePath: string) => {
@@ -956,6 +969,39 @@ export default function ReplEditorPage() {
     wsRef.current?.send(JSON.stringify({ type: "file:rename", oldPath, newPath }));
   }, []);
 
+  const handleSearch = useCallback((query: string) => {
+    const id = ++searchIdRef.current;
+    if (!query.trim()) {
+      setSearchMatches([]);
+      setSearchTruncated(false);
+      setSearching(false);
+      return;
+    }
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    setSearching(true);
+    wsRef.current.send(JSON.stringify({ type: "search", id: String(id), query }));
+  }, []);
+
+  const jumpToLine = useCallback((line: number) => {
+    const ed = editorRef.current;
+    ed?.revealLineInCenter?.(line);
+    ed?.setPosition?.({ lineNumber: line, column: 1 });
+    ed?.focus?.();
+  }, []);
+
+  // Once a search-selected file has loaded (content set + Monaco mounted), jump
+  // to the pending line. Re-runs on file switch and on content arrival.
+  useEffect(() => {
+    const pend = pendingRevealRef.current;
+    if (!pend || pend.path !== openFile) return;
+    const t = window.setTimeout(() => {
+      if (pendingRevealRef.current?.path !== openFile) return;
+      jumpToLine(pend.line);
+      pendingRevealRef.current = null;
+    }, 60);
+    return () => window.clearTimeout(t);
+  }, [openFile, fileContent, jumpToLine]);
+
   const handleFileClick = useCallback(
     (filePath: string) => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -965,13 +1011,13 @@ export default function ReplEditorPage() {
         handleTabClick(filePath);
       } else {
         // save current file before navigating away
-        if (openFile) fileContentsCache.current.set(openFile, fileContent);
+        if (openFile) fileContentsCache.current.set(openFile, fileContentRef.current);
         setOpenFile(filePath);
         setOpenTabs((prev) => (prev.includes(filePath) ? prev : [...prev, filePath]));
         openFileFromWs(wsRef.current, filePath);
       }
     },
-    [openFile, fileContent, handleTabClick],
+    [openFile, handleTabClick],
   );
 
   const handleStartPod = async () => {
@@ -1363,6 +1409,7 @@ export default function ReplEditorPage() {
                         onSelect={handleFileClick}
                         onDelete={handleDeleteFile}
                         onRename={handleRenameFile}
+                        onNewFile={(parentDir) => setNewFileName(parentDir ? `${parentDir}/` : "")}
                       />
                     ))}
                   </div>
@@ -1422,23 +1469,31 @@ export default function ReplEditorPage() {
                           editorDisposeRef.current = editorRef.current.onDidChangeModelContent((event) => {
                             const activePath = openFileRef.current;
                             if (ignoreEditorChangesRef.current || !activePath || event.changes.length === 0) return;
-                            dirtyFilesRef.current.add(activePath);
-                            setIsDirty(true);
+                            // Only flip dirty state on the false→true edge — avoids a
+                            // full re-render on every subsequent keystroke.
+                            if (!dirtyFilesRef.current.has(activePath)) {
+                              dirtyFilesRef.current.add(activePath);
+                              setIsDirty(true);
+                            }
                             schedulePatchFlush(activePath);
                           });
                         }}
                         onChange={(value) => {
                           const nextValue = value ?? "";
+                          // Keep the live ref + cache current, but do NOT setFileContent
+                          // here: Monaco already holds the text, and re-rendering this
+                          // 1600-line component on every keystroke is the editor's main
+                          // perf cost. fileContent state is only pushed back into Monaco
+                          // for programmatic updates (file switch / server sync).
                           fileContentRef.current = nextValue;
                           if (openFileRef.current) fileContentsCache.current.set(openFileRef.current, nextValue);
-                          setFileContent(nextValue);
                         }}
                         options={{
                           fontSize: 13,
                           fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
                           fontLigatures: true,
                           lineNumbers: "on",
-                          minimap: { enabled: false },
+                          minimap: { enabled: true, renderCharacters: false },
                           scrollBeyondLastLine: false,
                           wordWrap: "on",
                           tabSize: 2,
@@ -1448,6 +1503,10 @@ export default function ReplEditorPage() {
                           cursorBlinking: "smooth",
                           renderLineHighlight: "gutter",
                           bracketPairColorization: { enabled: true },
+                          stickyScroll: { enabled: true },
+                          formatOnPaste: true,
+                          suggestSelection: "first",
+                          scrollbar: { useShadows: false },
                         }}
                       />
                     ) : (
@@ -1537,8 +1596,27 @@ export default function ReplEditorPage() {
               )}
               <PanelTab active={activePanel === "output"} onClick={() => setActivePanel("output")}>Output</PanelTab>
               <PanelTab active={activePanel === "agent"} onClick={() => setActivePanel("agent")}>Agent</PanelTab>
-              {previewUrl && (
+              {previewUrl && activePanel === "preview" && (
                 <div className="ml-auto flex items-center gap-1 mr-1">
+                  <div className="flex items-center rounded-md bg-white/5 p-0.5 mr-1">
+                    {([
+                      ["mobile", "Mobile (390px)", "M"],
+                      ["tablet", "Tablet (768px)", "T"],
+                      ["full", "Full width", "F"],
+                    ] as const).map(([device, label, glyph]) => (
+                      <button
+                        key={device}
+                        onClick={() => setPreviewDevice(device)}
+                        title={label}
+                        className={cn(
+                          "w-5 h-5 rounded text-[10px] font-medium transition-colors",
+                          previewDevice === device ? "bg-white/15 text-white/90" : "text-white/35 hover:text-white/70",
+                        )}
+                      >
+                        {glyph}
+                      </button>
+                    ))}
+                  </div>
                   <button onClick={() => setPreviewFrameKey((k: number) => k + 1)} className="text-white/30 hover:text-white/70 transition-colors p-1" title="Refresh">
                     <RefreshIcon />
                   </button>
@@ -1550,12 +1628,13 @@ export default function ReplEditorPage() {
             </div>
 
             {activePanel === "preview" && isWebType && (
-              <div className="flex-1 relative overflow-hidden">
+              <div className="flex-1 relative overflow-auto flex justify-center bg-[#0a0a0c]">
                 {previewUrl ? (
                   <iframe
-                    key={`${previewUrl}-${previewFrameKey}`}
+                    key={`${previewUrl}-${previewFrameKey}-${previewDevice}`}
                     src={previewUrl}
-                    className="w-full h-full border-none"
+                    style={{ width: previewDevice === "mobile" ? 390 : previewDevice === "tablet" ? 768 : "100%" }}
+                    className="h-full border-none bg-white shrink-0"
                     title="Repl preview"
                     sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
                     referrerPolicy="no-referrer"
@@ -1618,6 +1697,32 @@ export default function ReplEditorPage() {
         </Panel>
 
       </PanelGroup>
+
+      {quickOpen && (
+        <QuickOpen
+          files={files}
+          onSelect={handleFileClick}
+          onClose={() => setQuickOpen(false)}
+        />
+      )}
+
+      {searchOpen && (
+        <ProjectSearch
+          results={searchMatches}
+          truncated={searchTruncated}
+          loading={searching}
+          onSearch={handleSearch}
+          onSelect={(path, line) => {
+            if (path === openFileRef.current) {
+              jumpToLine(line);
+            } else {
+              pendingRevealRef.current = { path, line };
+              handleFileClick(path);
+            }
+          }}
+          onClose={() => setSearchOpen(false)}
+        />
+      )}
     </div>
   );
 }

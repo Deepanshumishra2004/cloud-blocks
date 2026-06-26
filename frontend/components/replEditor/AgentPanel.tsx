@@ -226,6 +226,9 @@ export function AgentPanel({
         case "tool_result":
           upsertStep(event.id, { status: "done", output: event.output, isError: event.isError });
           break;
+        case "diff":
+          upsertStep(event.id, { diff: event.patch });
+          break;
         case "todo":
           updateAssistant((m) => ({ ...m, todos: event.todos as TodoItem[] }));
           break;
@@ -848,7 +851,7 @@ function ToolStep({ step, onDecide }: { step: Extract<AgentStep, { type: "tool" 
         {hasBody && <span className="text-white/30 text-[10px]">{open ? "▾" : "▸"}</span>}
       </button>
 
-      {open && diffable && <DiffView input={step.input} isWrite={isWrite} />}
+      {open && diffable && (step.diff ? <PatchView patch={step.diff} /> : <DiffView input={step.input} isWrite={isWrite} />)}
 
       {open && step.execOutput && (
         <pre className="text-[10px] text-white/40 font-mono px-2 pb-1.5 max-h-48 overflow-y-auto whitespace-pre-wrap break-all">{step.execOutput.slice(-6000)}</pre>
@@ -864,6 +867,31 @@ function ToolStep({ step, onDecide }: { step: Extract<AgentStep, { type: "tool" 
           <button onClick={() => onDecide(step.id, false)} className="text-2xs px-2 py-0.5 rounded bg-white/8 text-white/60 hover:bg-white/12">Deny</button>
         </div>
       )}
+    </div>
+  );
+}
+
+// Renders a server-computed unified diff: each line is tagged by its leading
+// char (' ' context, '-' removed, '+' added, '@' hunk marker).
+function PatchView({ patch }: { patch: string }) {
+  const lines = patch.split("\n");
+  return (
+    <div className="text-[10px] font-mono px-2 pb-1.5 max-h-64 overflow-y-auto">
+      {lines.map((line, i) => {
+        const tag = line[0];
+        const body = line.slice(1);
+        const cls =
+          tag === "+" ? "text-emerald-400/80" :
+          tag === "-" ? "text-red-400/70" :
+          tag === "@" ? "text-(--brand)/50" :
+          "text-white/35";
+        return (
+          <div key={i} className={`whitespace-pre-wrap break-all ${cls}`}>
+            <span className="select-none opacity-50">{tag === "@" ? "" : tag === " " ? "  " : `${tag} `}</span>
+            {tag === "@" ? line : body}
+          </div>
+        );
+      })}
     </div>
   );
 }

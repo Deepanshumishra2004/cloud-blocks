@@ -19,7 +19,10 @@ RUN cd ws-server && bun install --frozen-lockfile
 COPY ws-server ./ws-server
 COPY main.sh ./
 
-RUN chmod +x main.sh \
+# Strip CRLF → LF so the script runs under bash even when built from a Windows
+# checkout (git autocrlf would otherwise inject \r and break `set -e`/here-docs).
+RUN sed -i 's/\r$//' main.sh \
+  && chmod +x main.sh \
   && chmod 700 /app
 
 EXPOSE 8080 3002

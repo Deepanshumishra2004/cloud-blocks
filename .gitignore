@@ -16,3 +16,6 @@ skills-lock.json
 
 k8s/backend-secret.yaml
 k8s/repl-runtime-secret.yaml
+
+
+claude_code

@@ -10,6 +10,7 @@ export type AgentEvent =
   | { kind: "awaiting_approval"; id: string; name: string; input: Record<string, unknown>; reason: string }
   | { kind: "exec_output"; id: string; data: string }
   | { kind: "tool_result"; id: string; name: string; output: string; isError: boolean }
+  | { kind: "diff"; id: string; patch: string }
   | { kind: "todo"; todos: TodoItem[] }
   | { kind: "subagent"; id: string; subagentType: string; phase: "start" | "end"; summary?: string }
   | { kind: "awaiting_question"; id: string; question: string; header?: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }
@@ -32,6 +33,8 @@ export type AgentStep =
       status: "running" | "awaiting" | "done" | "denied";
       reason?: string;
       execOutput?: string;
+      /** Server-computed unified line diff for a file mutation. */
+      diff?: string;
     };
 
 // An image attached to a user message (base64, no data: prefix).
